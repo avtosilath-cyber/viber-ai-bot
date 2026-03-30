@@ -2,14 +2,43 @@ import os
 import requests
 from fastapi import FastAPI, Request
 from openai import OpenAI
-
+user_sessions = {}
 app = FastAPI()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 URL = f"https://api.telegram.org/bot{TOKEN}"
+def get_gpt_response(user_id, user_message):
 
+    if user_id not in user_sessions:
+        user_sessions[user_id] = [
+            {
+                "role": "system",
+                "content": "Ты менеджер по автозапчастям. Не спрашивай повторно VIN, если его уже дали. Запоминай данные клиента."
+            }
+        ]
+
+    user_sessions[user_id].append({
+        "role": "user",
+        "content": user_message
+    })
+
+    reply = get_gpt_response(chat_id, text)
+    )
+
+    reply = response.choices[0].message.content
+
+    user_sessions[user_id].append({
+        "role": "assistant",
+        "content": reply
+    })
+
+    # ограничение памяти
+    if len(user_sessions[user_id]) > 10:
+        user_sessions[user_id] = user_sessions[user_id][-10:]
+
+    return reply
 @app.get("/")
 def home():
     return {"status": "ok"}
