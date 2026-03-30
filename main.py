@@ -24,7 +24,9 @@ def get_gpt_response(user_id, user_message):
         "content": user_message
     })
 
-    reply = get_gpt_response(chat_id, text)
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=user_sessions[user_id]
     )
 
     reply = response.choices[0].message.content
@@ -32,6 +34,13 @@ def get_gpt_response(user_id, user_message):
     user_sessions[user_id].append({
         "role": "assistant",
         "content": reply
+    })
+
+    # ограничение памяти
+    if len(user_sessions[user_id]) > 10:
+        user_sessions[user_id] = user_sessions[user_id][-10:]
+
+    return reply
     })
 
     # ограничение памяти
