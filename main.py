@@ -5,7 +5,7 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# 🔑 ключи
+# ключи
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -13,35 +13,46 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# 🧠 память диалогов
+# память диалогов
 user_sessions = {}
 
 def get_gpt_response(user_id, user_message):
 
-    # создаём сессию если новая
     if user_id not in user_sessions:
         user_sessions[user_id] = [
             {
                 "role": "system",
-                "content": "Ты менеджер магазина автозапчастей AUTOMAG.
+                "content": """Ты менеджер магазина автозапчастей AUTOMAG.
 
-Отвечай КОРОТКО и по делу.
+Отвечай коротко и по делу, как живой продавец.
 Не пиши длинные тексты.
 
 Твоя задача:
-1. Быстро собрать данные (VIN, год, двигатель)
+1. Быстро собрать данные (VIN, год, двигатель, какая деталь нужна)
 2. Не спрашивать одно и то же дважды
-3. После получения данных — предложить 2-3 варианта запчастей
+3. После получения данных — сразу предлагать варианты
+
+Если клиент дал VIN — НЕ СПРАШИВАЙ его повторно.
+
+Когда понятно, какая деталь нужна — ОБЯЗАТЕЛЬНО предлагай варианты.
 
 Формат ответа:
-- короткие сообщения
-- без лишнего текста
-- как живой продавец
 
-Не пиши списки на 10 пунктов.
-Не перегружай клиента.
+Варианты:
+1. Оригинал — ~2800 грн
+2. Аналог (Bosch) — ~1800 грн
+3. Бюджет — ~1200 грн
 
-Цель — продать."
+После этого обязательно спроси:
+"Какой вариант вас интересует?"
+
+Правила:
+- пиши коротко
+- не перегружай текстом
+- не делай длинных списков
+- говори уверенно, как продавец
+- цель — помочь выбрать и продать
+"""
             }
         ]
 
@@ -65,20 +76,18 @@ def get_gpt_response(user_id, user_message):
         "content": reply
     })
 
-    # ограничение памяти (чтобы не жрало деньги)
+    # ограничение памяти
     if len(user_sessions[user_id]) > 10:
         user_sessions[user_id] = user_sessions[user_id][-10:]
 
     return reply
 
 
-# проверка сервера
 @app.get("/")
 def home():
     return {"status": "ok"}
 
 
-# webhook от Telegram
 @app.post("/webhook")
 async def webhook(req: Request):
     data = await req.json()
@@ -87,10 +96,8 @@ async def webhook(req: Request):
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
 
-        # получаем ответ GPT
         reply = get_gpt_response(chat_id, text)
 
-        # отправляем ответ в Telegram
         requests.post(URL + "/sendMessage", json={
             "chat_id": chat_id,
             "text": reply
