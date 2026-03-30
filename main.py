@@ -41,7 +41,7 @@ reply = response.choices[0].message.content
         user_sessions[user_id] = user_sessions[user_id][-10:]
 
     return reply
-    })
+    }
 
     # ограничение памяти
     if len(user_sessions[user_id]) > 10:
