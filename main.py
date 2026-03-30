@@ -6,6 +6,7 @@ from openai import OpenAI
 
 app = FastAPI()
 
+# 🔑 ключи
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -13,13 +14,17 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
+# 🧠 память
 user_sessions = {}
 
-ADMIN_CHAT_ID = 123456789
+# 👨‍💼 ваш Telegram ID
+ADMIN_CHAT_ID = 123456789  # ВСТАВЬТЕ СВОЙ ID
+
+# 📂 прайс
 PRICE_FILE = "price.xlsx"
 
 
-# 🔎 язык
+# 🌍 язык
 def detect_language(text):
     ua_chars = set("іїєґ")
     if any(c in ua_chars for c in text.lower()):
@@ -27,26 +32,45 @@ def detect_language(text):
     return "ru"
 
 
-# 🧠 определяем тип запроса через GPT
+# 🧠 intent
 def detect_intent(text):
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": """Определи тип запроса:
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """Определи тип запроса:
+article — номер детали
+vin — VIN код
+search — подбор
 
-1. article — если есть номер детали (например: A123456, 06A906461)
-2. vin — если это VIN код
-3. search — если человек просит подбор
+Ответь одним словом."""
+                },
+                {"role": "user", "content": text}
+            ]
+        )
+        return response.choices[0].message.content.strip().lower()
+    except:
+        return "search"
 
-Ответь строго одним словом: article / vin / search"""
-            },
-            {"role": "user", "content": text}
-        ]
-    )
 
-    return response.choices[0].message.content.strip().lower()
+# 🚗 VIN → авто
+def detect_car_by_vin(vin):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Определи марку, модель и год авто по VIN. Коротко."
+                },
+                {"role": "user", "content": vin}
+            ]
+        )
+        return response.choices[0].message.content
+    except:
+        return "Не удалось определить авто"
 
 
 # 🔎 поиск
@@ -67,13 +91,40 @@ def search_by_article(article):
             })
 
         return parts
-
     except Exception as e:
         print("Ошибка прайса:", e)
         return []
 
 
-# 🤖 GPT диалог
+# 🔘 кнопки
+def send_buttons(chat_id, lang):
+    if lang == "ua":
+        text = "Оберіть варіант:"
+        keyboard = {
+            "keyboard": [
+                [{"text": "🔍 Підбір по VIN"}],
+                [{"text": "📦 У мене є номер деталі"}]
+            ],
+            "resize_keyboard": True
+        }
+    else:
+        text = "Выберите вариант:"
+        keyboard = {
+            "keyboard": [
+                [{"text": "🔍 Подбор по VIN"}],
+                [{"text": "📦 У меня есть номер детали"}]
+            ],
+            "resize_keyboard": True
+        }
+
+    requests.post(URL + "/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text,
+        "reply_markup": keyboard
+    })
+
+
+# 🤖 GPT fallback
 def get_gpt_response(user_id, user_message):
 
     lang = detect_language(user_message)
@@ -82,32 +133,21 @@ def get_gpt_response(user_id, user_message):
 
         system_text = """Ты менеджер магазина автозапчастей AUTOMAG.
 
-Отвечай коротко и по делу.
+Отвечай коротко.
+Сначала выясни:
+- номер детали или подбор
 
-Всегда сначала уточни:
-- есть номер детали?
-- или нужен подбор?
-
-Если есть номер — предложи проверить наличие.
-Если подбор — запроси VIN.
-
-Не выдумывай запчасти.
-Не придумывай цены.
+Не выдумывай данные.
 """
 
         if lang == "ua":
-            system_text += "\nОтвечай только на украинском."
+            system_text += "\nВідповідай українською."
         else:
-            system_text += "\nОтвечай только на русском."
+            system_text += "\nОтвечай на русском."
 
-        user_sessions[user_id] = [
-            {"role": "system", "content": system_text}
-        ]
+        user_sessions[user_id] = [{"role": "system", "content": system_text}]
 
-    user_sessions[user_id].append({
-        "role": "user",
-        "content": user_message
-    })
+    user_sessions[user_id].append({"role": "user", "content": user_message})
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
@@ -116,10 +156,7 @@ def get_gpt_response(user_id, user_message):
 
     reply = response.choices[0].message.content
 
-    user_sessions[user_id].append({
-        "role": "assistant",
-        "content": reply
-    })
+    user_sessions[user_id].append({"role": "assistant", "content": reply})
 
     if len(user_sessions[user_id]) > 10:
         user_sessions[user_id] = user_sessions[user_id][-10:]
@@ -142,38 +179,48 @@ async def webhook(req: Request):
 
         lang = detect_language(text)
         intent = detect_intent(text)
+        text_lower = text.lower()
 
-        # 🔥 номер детали
-        if intent == "article":
+        # 🚀 старт
+        if text == "/start":
+            send_buttons(chat_id, lang)
+            return {"ok": True}
 
-            parts = search_by_article(text)
+        # 🔘 кнопка VIN
+        if "vin" in text_lower:
+            reply = "Напишите VIN код" if lang == "ru" else "Напишіть VIN код"
 
-            if parts:
-                reply = "Ось що знайшов:\n\n" if lang == "ua" else "Вот что нашёл:\n\n"
-
-                for p in parts:
-                    reply += f"{p['name']} — {p['price']} грн ({p['stock']})\n"
-
-                reply += "\nЯкий варіант цікавить?" if lang == "ua" else "\nКакой вариант интересует?"
-
-            else:
-                reply = "Не знайшов. Напишіть VIN." if lang == "ua" else "Не нашёл. Напишите VIN."
+        # 🔘 кнопка номер
+        elif "номер" in text_lower:
+            reply = "Напишите номер детали" if lang == "ru" else "Напишіть номер деталі"
 
         # 🔥 VIN
         elif intent == "vin":
+            car = detect_car_by_vin(text)
 
-            reply = "Передаю менеджеру 👍" if lang == "ua" else "Передаю менеджеру 👍"
+            reply = f"{car}\nПередаю менеджеру 👍" if lang == "ru" else f"{car}\nПередаю менеджеру 👍"
 
             requests.post(URL + "/sendMessage", json={
                 "chat_id": ADMIN_CHAT_ID,
-                "text": f"Заявка VIN:\n{chat_id}\n{text}"
+                "text": f"Заявка VIN\nКлиент: {chat_id}\n{text}\n{car}"
             })
+
+        # 🔥 номер детали
+        elif intent == "article":
+            parts = search_by_article(text)
+
+            if parts:
+                reply = "Вот варианты:\n\n" if lang == "ru" else "Ось варіанти:\n\n"
+                for p in parts:
+                    reply += f"{p['name']} — {p['price']} грн ({p['stock']})\n"
+            else:
+                reply = "Не нашёл, напишите VIN" if lang == "ru" else "Не знайшов, напишіть VIN"
 
         # 🔥 подбор
         elif intent == "search":
+            reply = "Напишите VIN для подбора" if lang == "ru" else "Напишіть VIN для підбору"
 
-            reply = "Напишіть VIN для підбору" if lang == "ua" else "Напишите VIN для подбора"
-
+        # 🤖 fallback
         else:
             reply = get_gpt_response(chat_id, text)
 
