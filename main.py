@@ -28,7 +28,7 @@ def get_gpt_response(user_id, user_message):
         model="gpt-4.1-mini",
         messages=user_sessions[user_id]
     )
-
+reply = response.choices[0].message.content
     reply = response.choices[0].message.content
 
     user_sessions[user_id].append({
