@@ -23,7 +23,7 @@ def get_gpt_response(user_id, user_message):
         user_sessions[user_id] = [
             {
                 "role": "system",
-                "content": ""Ты менеджер магазина автозапчастей AUTOMAG.
+                "content": "Ты менеджер магазина автозапчастей AUTOMAG.
 
 Отвечай КОРОТКО и по делу.
 Не пиши длинные тексты.
@@ -41,7 +41,7 @@ def get_gpt_response(user_id, user_message):
 Не пиши списки на 10 пунктов.
 Не перегружай клиента.
 
-Цель — продать."."
+Цель — продать."
             }
         ]
 
