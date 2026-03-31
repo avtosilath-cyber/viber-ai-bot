@@ -17,10 +17,7 @@ if not TELEGRAM_TOKEN:
 if not OPENAI_API_KEY:
     raise ValueError("❌ OPENAI_API_KEY не задан")
 
-# ====== GPT ======
 client = OpenAI(api_key=OPENAI_API_KEY)
-
-# ====== TELEGRAM ======
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ====== ПРАЙС ======
@@ -29,6 +26,9 @@ try:
 except:
     df = None
     print("⚠️ Прайс не загружен")
+
+# ====== ПАМЯТЬ ======
+users = {}
 
 # ====== ЯЗЫК ======
 def detect_language(text):
@@ -56,57 +56,52 @@ def search_price(query):
     except:
         return None
 
-    # 💰 +15% и округление до десятков
     final_price = int(round(base_price * 1.15 / 10) * 10)
 
     return f"{name} — {final_price} грн"
 
 # ====== GPT ======
-def ask_gpt(text):
+def ask_gpt(text, is_new_user):
 
     lang = detect_language(text)
 
+    greeting = ""
+    if is_new_user:
+        greeting = "Поздоровайся с клиентом.\n"
+
     if lang == "ua":
-        system_prompt = """
+        system_prompt = f"""
 Ти менеджер магазину автозапчастин AUTOMAG.
 
-Ти:
-- продаєш запчастини
-- уточнюєш авто
-- ведеш клієнта до покупки
+{greeting}
 
 Правила:
 - не вигадуй ціни
 - якщо питають ціну — скажи що перевіряєш по прайсу
-- відповідай коротко і по суті
+- не здоровайся кожен раз
+- відповідай коротко
 """
     else:
-        system_prompt = """
+        system_prompt = f"""
 Ты менеджер магазина автозапчастей AUTOMAG.
 
-Ты:
-- продаёшь запчасти
-- уточняешь авто
-- ведёшь к покупке
+{greeting}
 
 Правила:
 - не придумывай цены
-- если спрашивают цену — говори, что проверяешь по прайсу
+- не здоровайся каждый раз
 - отвечай кратко
 """
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ]
-        )
-        return response.choices[0].message.content
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ]
+    )
 
-    except Exception as e:
-        return f"Ошибка GPT: {str(e)}"
+    return response.choices[0].message.content
 
 # ====== ОТПРАВКА ======
 def send_message(chat_id, text):
@@ -114,10 +109,6 @@ def send_message(chat_id, text):
         "chat_id": chat_id,
         "text": text
     })
-
-# ====== СТАТУС ЗАКАЗА ======
-def check_order(order_id):
-    return f"Заказ {order_id}: в обработке 👌"
 
 # ====== WEBHOOK ======
 @app.post("/")
@@ -131,37 +122,27 @@ async def webhook(request: Request):
 
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
-
         text_lower = text.lower()
 
-        # ===== VIN → менеджеру =====
+        # ===== ПАМЯТЬ =====
+        is_new_user = chat_id not in users
+        users[chat_id] = True
+
+        # ===== VIN =====
         if "vin" in text_lower or len(text) == 17:
             send_message(chat_id, "Передаю менеджеру 👌")
             if ADMIN_CHAT_ID:
-                send_message(ADMIN_CHAT_ID, f"🔥 Клиент отправил VIN:\n{text}")
-            return {"ok": True}
-
-        # ===== СТАТУС ЗАКАЗА =====
-        if "заказ" in text_lower or "order" in text_lower:
-            send_message(chat_id, "Напиши номер заказа 👌")
-            return {"ok": True}
-
-        if text.isdigit():
-            status = check_order(text)
-            send_message(chat_id, status)
+                send_message(ADMIN_CHAT_ID, f"🔥 VIN клиент:\n{text}")
             return {"ok": True}
 
         # ===== ПОИСК ЦЕНЫ =====
-        if "цена" in text_lower or "сколько" in text_lower:
-            result = search_price(text)
-            if result:
-                send_message(chat_id, f"Нашёл 👇\n{result}")
-            else:
-                send_message(chat_id, "Не нашёл, сейчас уточню 👌")
+        price = search_price(text)
+        if price:
+            send_message(chat_id, f"{price}")
             return {"ok": True}
 
         # ===== GPT =====
-        reply = ask_gpt(text)
+        reply = ask_gpt(text, is_new_user)
         send_message(chat_id, reply)
 
     except Exception as e:
