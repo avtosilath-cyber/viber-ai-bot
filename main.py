@@ -25,9 +25,18 @@ try:
 
     df.columns = df.columns.str.strip().str.lower()
 
-    # 👉 сразу чистим артикулы
+    # чистим артикулы
     df["article_clean"] = (
         df["article"]
+        .astype(str)
+        .str.lower()
+        .str.replace(" ", "")
+        .str.replace("-", "")
+    )
+
+    # чистим названия
+    df["name_clean"] = (
+        df["name"]
         .astype(str)
         .str.lower()
         .str.replace(" ", "")
@@ -50,26 +59,45 @@ def detect_language(text):
         return "ua"
     return "ru"
 
-# ====== ПОИСК (УЛУЧШЕННЫЙ) ======
+# ====== УВЕДОМЛЕНИЕ МЕНЕДЖЕРА ======
+def notify_manager(reason, user_text, chat_id):
+    if not ADMIN_CHAT_ID:
+        return
+
+    message = f"""
+🔥 НУЖЕН МЕНЕДЖЕР
+
+Причина: {reason}
+
+Сообщение клиента:
+{user_text}
+
+ID клиента:
+{chat_id}
+"""
+
+    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
+        "chat_id": ADMIN_CHAT_ID,
+        "text": message
+    })
+
+# ====== ПОИСК ======
 def search_price(query):
     if df is None:
         return None
 
     q = query.lower().replace(" ", "").replace("-", "")
 
-    # 🔥 поиск по артикулу (гибкий)
+    # поиск
     article_match = df[df["article_clean"].str.contains(q)]
+    name_match = df[df["name_clean"].str.contains(q)]
 
-    if not article_match.empty:
-        results = article_match.head(3)
-    else:
-        # 🔍 поиск по названию
-        name_match = df[df["name"].astype(str).str.lower().str.contains(query.lower())]
+    results = pd.concat([article_match, name_match]).drop_duplicates()
 
-        if name_match.empty:
-            return None
+    if results.empty:
+        return None
 
-        results = name_match.head(3)
+    results = results.head(3)
 
     answers = []
 
@@ -107,7 +135,6 @@ def ask_gpt(text, is_new_user):
 Правила:
 - не вигадуй ціни
 - якщо немає в прайсі — запропонуй допомогу
-- не здоровайся кожен раз
 - відповідай коротко
 """
     else:
@@ -119,7 +146,6 @@ def ask_gpt(text, is_new_user):
 Правила:
 - не придумывай цены
 - если нет в прайсе — предложи помощь
-- не здоровайся каждый раз
 - отвечай кратко
 """
 
@@ -161,19 +187,26 @@ async def webhook(request: Request):
         # ===== VIN =====
         if "vin" in text_lower or len(text.strip()) == 17:
             send_message(chat_id, "Передаю менеджеру 👌")
-            if ADMIN_CHAT_ID:
-                send_message(ADMIN_CHAT_ID, f"🔥 VIN клиент:\n{text}")
+            notify_manager("VIN запрос", text, chat_id)
+            return {"ok": True}
+
+        # ===== ПОДБОР =====
+        if "подбери" in text_lower or "подбор" in text_lower:
+            send_message(chat_id, "Передаю менеджеру для подбора 👌")
+            notify_manager("Запрос подбора", text, chat_id)
             return {"ok": True}
 
         # ===== ПОИСК =====
         result = search_price(text)
+
         if result:
             send_message(chat_id, result)
             return {"ok": True}
 
-        # ===== GPT =====
-        reply = ask_gpt(text, is_new_user)
-        send_message(chat_id, reply)
+        # ===== ЕСЛИ НЕ НАШЛИ =====
+        send_message(chat_id, "Не нашли в наличии. Передаю менеджеру 👌")
+        notify_manager("Не найдено в прайсе", text, chat_id)
+        return {"ok": True}
 
     except Exception as e:
         print("❌ Ошибка:", e)
