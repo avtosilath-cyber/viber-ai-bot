@@ -1,6 +1,7 @@
 import os
 import requests
 import pandas as pd
+import zipfile
 from fastapi import FastAPI, Request
 from openai import OpenAI
 
@@ -20,12 +21,21 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# ====== ПРАЙС ======
+# ====== ЗАГРУЗКА ПРАЙСА ИЗ ZIP ======
 try:
-    df = pd.read_excel("price.xlsx")
-except:
+    with zipfile.ZipFile("merged_min_price.zip") as z:
+        file_name = z.namelist()[0]  # берём первый файл внутри
+
+        with z.open(file_name) as f:
+            df = pd.read_excel(f)
+
+    df.columns = df.columns.str.strip().str.lower()
+
+    print("✅ Прайс загружен")
+
+except Exception as e:
     df = None
-    print("⚠️ Прайс не загружен")
+    print("❌ Ошибка загрузки прайса:", e)
 
 # ====== ПАМЯТЬ ======
 users = {}
@@ -37,28 +47,41 @@ def detect_language(text):
         return "ua"
     return "ru"
 
-# ====== ПОИСК ЦЕНЫ ======
+# ====== ПОИСК ======
 def search_price(query):
     if df is None:
         return None
 
-    results = df[df.iloc[:, 0].astype(str).str.contains(query, case=False, na=False)]
+    query = query.lower().strip()
 
-    if results.empty:
-        return None
+    # поиск по артикулу
+    article_match = df[df["article"].astype(str).str.lower() == query]
 
-    row = results.iloc[0]
+    if not article_match.empty:
+        row = article_match.iloc[0]
+    else:
+        # поиск по названию
+        name_match = df[df["name"].astype(str).str.lower().str.contains(query)]
 
-    name = str(row.iloc[0])
+        if name_match.empty:
+            return None
+
+        row = name_match.iloc[0]
 
     try:
-        base_price = float(row.iloc[1])
+        name = str(row["name"])
+        base_price = float(row["price"])
+        qty = int(row.get("qty_total", 0))
     except:
         return None
 
+    # наценка + округление
     final_price = int(round(base_price * 1.15 / 10) * 10)
 
-    return f"{name} — {final_price} грн"
+    if qty > 0:
+        return f"{name} — {final_price} грн\nВ наличии: {qty} шт"
+    else:
+        return f"{name} — {final_price} грн\nПод заказ 👌"
 
 # ====== GPT ======
 def ask_gpt(text, is_new_user):
@@ -77,7 +100,6 @@ def ask_gpt(text, is_new_user):
 
 Правила:
 - не вигадуй ціни
-- якщо питають ціну — скажи що перевіряєш по прайсу
 - не здоровайся кожен раз
 - відповідай коротко
 """
@@ -124,21 +146,21 @@ async def webhook(request: Request):
         text = message.get("text", "")
         text_lower = text.lower()
 
-        # ===== ПАМЯТЬ =====
+        # память
         is_new_user = chat_id not in users
         users[chat_id] = True
 
         # ===== VIN =====
-        if "vin" in text_lower or len(text) == 17:
+        if "vin" in text_lower or len(text.strip()) == 17:
             send_message(chat_id, "Передаю менеджеру 👌")
             if ADMIN_CHAT_ID:
                 send_message(ADMIN_CHAT_ID, f"🔥 VIN клиент:\n{text}")
             return {"ok": True}
 
-        # ===== ПОИСК ЦЕНЫ =====
-        price = search_price(text)
-        if price:
-            send_message(chat_id, f"{price}")
+        # ===== ПОИСК =====
+        result = search_price(text)
+        if result:
+            send_message(chat_id, result)
             return {"ok": True}
 
         # ===== GPT =====
@@ -146,6 +168,6 @@ async def webhook(request: Request):
         send_message(chat_id, reply)
 
     except Exception as e:
-        print("Ошибка:", e)
+        print("❌ Ошибка:", e)
 
     return {"ok": True}
