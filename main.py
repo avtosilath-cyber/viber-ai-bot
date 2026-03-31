@@ -22,35 +22,71 @@ def clean(text):
 # ===== ИЗВЛЕЧЕНИЕ АРТИКУЛА =====
 def extract_article(text):
     words = text.lower().split()
-
     for word in words:
         cleaned = clean(word)
         if len(cleaned) >= 3 and any(c.isdigit() for c in cleaned):
             return cleaned
-
     return None
 
-# ===== ЗАГРУЗКА ПРАЙСА =====
+# ===== ЗАГРУЗКА ПРАЙСА (УМНАЯ) =====
 def load_price():
     try:
-        # 🔥 читаем твой Excel (пропускаем мусор сверху)
-        df = pd.read_excel("price.xlsx", skiprows=6)
+        df_raw = pd.read_excel("price.xlsx", header=None)
+
+        print("📊 RAW:")
+        print(df_raw.head(10))
+
+        # 🔥 ищем строку заголовков
+        header_row = None
+        for i in range(15):
+            row = df_raw.iloc[i].astype(str).str.lower()
+            if row.str.contains("артикул").any():
+                header_row = i
+                break
+
+        if header_row is None:
+            print("❌ Не нашли строку заголовков")
+            return None
+
+        print("✅ Заголовки строка:", header_row)
+
+        # читаем нормально
+        df = pd.read_excel("price.xlsx", header=header_row)
 
         print("📊 Колонки:", df.columns.tolist())
 
-        # 🔥 переименовываем
+        # 🔥 нормализация названий колонок
+        columns = {str(col).lower(): col for col in df.columns}
+
+        def find_col(keys):
+            for key in columns:
+                for k in keys:
+                    if k in key:
+                        return columns[key]
+            return None
+
+        article_col = find_col(["артикул", "article"])
+        name_col = find_col(["наймен", "name"])
+        price_col = find_col(["ціна", "price"])
+        qty_col = find_col(["кільк", "qty"])
+
+        if not article_col:
+            print("❌ Нет article колонки")
+            return None
+
         df = df.rename(columns={
-            "Артикул": "article",
-            "Найменування": "name",
-            "Ціна грн": "price",
-            "Кількість": "qty_total"
+            article_col: "article",
+            name_col: "name" if name_col else None,
+            price_col: "price" if price_col else None,
+            qty_col: "qty_total" if qty_col else None
         })
 
-        # защита
         df = df.dropna(subset=["article"])
 
         df["article"] = df["article"].astype(str)
-        df["name"] = df["name"].astype(str)
+        df["name"] = df.get("name", "").astype(str)
+        df["price"] = pd.to_numeric(df.get("price", 0), errors="coerce").fillna(0)
+        df["qty_total"] = pd.to_numeric(df.get("qty_total", 0), errors="coerce").fillna(0)
 
         df["article_clean"] = df["article"].apply(clean)
 
@@ -59,7 +95,7 @@ def load_price():
         return df
 
     except Exception as e:
-        print("❌ Ошибка загрузки:", e)
+        print("❌ Ошибка:", e)
         return None
 
 
@@ -81,10 +117,7 @@ def notify_manager(reason, text, chat_id):
 🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
 
 Причина: {reason}
-
-Сообщение:
-{text}
-
+Сообщение: {text}
 ID: {chat_id}
 """
     send(ADMIN_CHAT_ID, msg)
@@ -102,13 +135,10 @@ def format_results(results):
     answer = []
 
     for _, row in results.iterrows():
-        try:
-            article = row["article"]
-            name = row["name"]
-            price = float(row["price"])
-            qty = int(row["qty_total"])
-        except:
-            continue
+        article = row["article"]
+        name = row["name"]
+        price = float(row["price"])
+        qty = int(row["qty_total"])
 
         final_price = int(round(price * 1.15 / 10) * 10)
 
@@ -126,21 +156,21 @@ def search(text):
 
     article = extract_article(text)
 
-    print("ИЩЕМ:", article)
+    print("🔎 ИЩЕМ:", article)
 
     if not article:
         return None
 
     exact = df[df["article_clean"] == article]
-    if len(exact) > 0:
+    if not exact.empty:
         return format_results(exact)
 
     contains = df[df["article_clean"].str.contains(article, na=False)]
-    if len(contains) > 0:
+    if not contains.empty:
         return format_results(contains)
 
     fallback = df[df["article_clean"].str.contains(article[:4], na=False)]
-    if len(fallback) > 0:
+    if not fallback.empty:
         return format_results(fallback)
 
     return None
@@ -164,31 +194,26 @@ async def webhook(request: Request):
 
         user = users[chat_id]
 
-        # не повторяем
         if user["last"] == text:
             return {"ok": True}
 
         user["last"] = text
 
-        # привет 1 раз
         if not user["started"]:
             send(chat_id, "Подберу запчасть 👌 Напишите артикул или название.")
             user["started"] = True
             return {"ok": True}
 
-        # VIN
         if "vin" in text_lower or len(text.strip()) == 17:
             send(chat_id, "Передаю менеджеру 👌")
             notify_manager("VIN", text, chat_id)
             return {"ok": True}
 
-        # подбор
         if "подбор" in text_lower:
             send(chat_id, "Передаю менеджеру 👌")
             notify_manager("Подбор", text, chat_id)
             return {"ok": True}
 
-        # поиск
         result = search(text)
 
         if result:
