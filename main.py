@@ -7,37 +7,40 @@ from fastapi import FastAPI, Request
 
 app = FastAPI()
 
-# ====== НАСТРОЙКИ ======
+# ===== НАСТРОЙКИ =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# ====== ЧИСТКА ======
+# ===== ПАМЯТЬ КЛИЕНТОВ =====
+users = {}
+
+# ===== ЧИСТКА =====
 def clean(text):
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
 
-# ====== ВЫТАСКИВАЕМ АРТИКУЛ ======
+# ===== ИЗВЛЕЧЕНИЕ АРТИКУЛА =====
 def extract_article(text):
     words = text.lower().split()
 
     for word in words:
         cleaned = clean(word)
-
         if len(cleaned) >= 3 and any(c.isdigit() for c in cleaned):
             return cleaned
 
     return None
 
-# ====== ЗАГРУЗКА ПРАЙСА ======
+# ===== ЗАГРУЗКА ПРАЙСА (ЖЁСТКАЯ) =====
 try:
     with zipfile.ZipFile("merged_min_price.zip") as z:
         file_name = z.namelist()[0]
 
         with z.open(file_name) as f:
-            df = pd.read_excel(f)
+            df = pd.read_excel(f, header=None)
 
-    # ЖЁСТКО задаём структуру
+    # берём только нужные колонки
+    df = df.iloc[:, :6]
     df.columns = ["id", "article", "brand", "name", "price", "qty_total"]
 
     df["article"] = df["article"].astype(str)
@@ -47,40 +50,49 @@ try:
     df["name_clean"] = df["name"].apply(clean)
 
     print("✅ Прайс загружен")
+    print(df.head(10))
 
 except Exception as e:
     df = None
-    print("❌ Ошибка загрузки прайса:", e)
+    print("❌ Ошибка прайса:", e)
 
-# ====== ОТПРАВКА ======
+# ===== ОТПРАВКА =====
 def send(chat_id, text):
     requests.post(f"{TELEGRAM_URL}/sendMessage", json={
         "chat_id": chat_id,
         "text": text
     })
 
-# ====== МЕНЕДЖЕР ======
-def notify_manager(reason, user_text, chat_id):
+# ===== МЕНЕДЖЕР =====
+def notify_manager(reason, text, chat_id):
     if not ADMIN_CHAT_ID:
         return
 
     msg = f"""
-🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
+🔥 НУЖЕН МЕНЕДЖЕР
 
 Причина: {reason}
 
 Сообщение:
-{user_text}
+{text}
 
 ID клиента:
 {chat_id}
 """
     send(ADMIN_CHAT_ID, msg)
 
-# ====== ФОРМАТ ======
+# ===== ФОРМАТ ОТВЕТА =====
 def format_results(results):
-    results = results.drop_duplicates()
-    results = results.sort_values(by="qty_total", ascending=False)
+    # сначала в наличии
+    in_stock = results[results["qty_total"] > 0]
+
+    if not in_stock.empty:
+        results = in_stock
+
+    # сортируем по цене (дешевле вверх)
+    results = results.sort_values(by="price")
+
+    # берём топ 3
     results = results.head(3)
 
     answer = []
@@ -90,7 +102,7 @@ def format_results(results):
             article = row["article"]
             name = row["name"]
             price = float(row["price"])
-            qty = int(row.get("qty_total", 0))
+            qty = int(row["qty_total"])
         except:
             continue
 
@@ -103,31 +115,31 @@ def format_results(results):
 
     return "\n".join(answer)
 
-# ====== ПОИСК ======
-def search(query):
+# ===== ПОИСК =====
+def search(text):
     if df is None:
         return None
 
-    article = extract_article(query)
+    article = extract_article(text)
 
     print("ИЩЕМ:", article)
 
     if not article:
         return None
 
-    # 🔥 точное совпадение
+    # точное совпадение
     exact = df[df["article_clean"] == article]
     if not exact.empty:
         return format_results(exact)
 
-    # 🔥 похожие
+    # частичное
     similar = df[df["article_clean"].str.contains(article)]
     if not similar.empty:
         return format_results(similar)
 
     return None
 
-# ====== WEBHOOK ======
+# ===== WEBHOOK =====
 @app.post("/")
 async def webhook(request: Request):
     data = await request.json()
@@ -141,9 +153,16 @@ async def webhook(request: Request):
         text = message.get("text", "")
         text_lower = text.lower()
 
-        # ===== ПРИВЕТ ТОЛЬКО ПО /start =====
-        if text == "/start":
-            send(chat_id, "Здравствуйте! Подберу запчасть 👌 Напишите артикул или название.")
+        # ===== ПАМЯТЬ =====
+        if chat_id not in users:
+            users[chat_id] = {"started": False}
+
+        user = users[chat_id]
+
+        # ===== ПРИВЕТ ТОЛЬКО 1 РАЗ =====
+        if not user["started"]:
+            send(chat_id, "Подберу запчасть 👌 Напишите артикул или название.")
+            user["started"] = True
             return {"ok": True}
 
         # ===== VIN =====
