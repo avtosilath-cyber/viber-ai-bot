@@ -17,6 +17,18 @@ TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 def clean(text):
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
 
+# ====== ВЫТАСКИВАЕМ АРТИКУЛ ======
+def extract_article(text):
+    words = text.lower().split()
+
+    for word in words:
+        cleaned = clean(word)
+
+        if len(cleaned) >= 3 and any(c.isdigit() for c in cleaned):
+            return cleaned
+
+    return None
+
 # ====== ЗАГРУЗКА ПРАЙСА ======
 try:
     with zipfile.ZipFile("merged_min_price.zip") as z:
@@ -39,9 +51,6 @@ try:
 except Exception as e:
     df = None
     print("❌ Ошибка загрузки прайса:", e)
-
-# ====== ПАМЯТЬ ======
-users = {}
 
 # ====== ОТПРАВКА ======
 def send(chat_id, text):
@@ -68,7 +77,7 @@ ID клиента:
 """
     send(ADMIN_CHAT_ID, msg)
 
-# ====== ФОРМАТ ВЫВОДА ======
+# ====== ФОРМАТ ======
 def format_results(results):
     results = results.drop_duplicates()
     results = results.sort_values(by="qty_total", ascending=False)
@@ -99,41 +108,26 @@ def search(query):
     if df is None:
         return None
 
-    words = query.lower().split()
+    article = extract_article(query)
 
-    # 🔥 1. ищем точный артикул
-    for word in words:
-        q = clean(word)
+    print("ИЩЕМ:", article)
 
-        if len(q) < 3:
-            continue
-
-        exact = df[df["article_clean"] == q]
-        if not exact.empty:
-            return format_results(exact)
-
-    # 🔥 2. ищем по частям
-    results = pd.DataFrame()
-
-    for word in words:
-        q = clean(word)
-
-        if len(q) < 3:
-            continue
-
-        temp = df[
-            df["article_clean"].str.contains(q) |
-            df["name_clean"].str.contains(q)
-        ]
-
-        results = pd.concat([results, temp])
-
-    if results.empty:
+    if not article:
         return None
 
-    return format_results(results)
+    # 🔥 точное совпадение
+    exact = df[df["article_clean"] == article]
+    if not exact.empty:
+        return format_results(exact)
 
-# ====== ОСНОВНАЯ ЛОГИКА ======
+    # 🔥 похожие
+    similar = df[df["article_clean"].str.contains(article)]
+    if not similar.empty:
+        return format_results(similar)
+
+    return None
+
+# ====== WEBHOOK ======
 @app.post("/")
 async def webhook(request: Request):
     data = await request.json()
@@ -147,12 +141,10 @@ async def webhook(request: Request):
         text = message.get("text", "")
         text_lower = text.lower()
 
-        is_new = chat_id not in users
-        users[chat_id] = True
-
-        # ===== ПРИВЕТ =====
-        if is_new:
+        # ===== ПРИВЕТ ТОЛЬКО ПО /start =====
+        if text == "/start":
             send(chat_id, "Здравствуйте! Подберу запчасть 👌 Напишите артикул или название.")
+            return {"ok": True}
 
         # ===== VIN =====
         if "vin" in text_lower or len(text.strip()) == 17:
@@ -162,7 +154,7 @@ async def webhook(request: Request):
 
         # ===== ПОДБОР =====
         if "подбери" in text_lower or "подбор" in text_lower:
-            send(chat_id, "Передаю менеджеру для подбора 👌")
+            send(chat_id, "Передаю менеджеру 👌")
             notify_manager("Подбор", text, chat_id)
             return {"ok": True}
 
@@ -170,12 +162,12 @@ async def webhook(request: Request):
         result = search(text)
 
         if result:
-            send(chat_id, f"Вот что есть:\n\n{result}\n\nОформляем?")
+            send(chat_id, f"{result}\n\nОформляем?")
             return {"ok": True}
 
         # ===== НЕ НАШЛИ =====
-        send(chat_id, "Не нашли в наличии. Передаю менеджеру 👌")
-        notify_manager("Не найдено в прайсе", text, chat_id)
+        send(chat_id, "Не нашли. Передаю менеджеру 👌")
+        notify_manager("Не найдено", text, chat_id)
 
         return {"ok": True}
 
