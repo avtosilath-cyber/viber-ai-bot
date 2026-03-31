@@ -6,227 +6,153 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# 🔑 ключи
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+# ====== ПЕРЕМЕННЫЕ ======
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # твой телеграм id
 
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN не задан")
+
+if not OPENAI_API_KEY:
+    raise ValueError("❌ OPENAI_API_KEY не задан")
+
+# ====== GPT ======
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-URL = f"https://api.telegram.org/bot{TOKEN}"
+# ====== TELEGRAM ======
+TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# 🧠 память
-user_sessions = {}
+# ====== ЗАГРУЗКА ПРАЙСА ======
+try:
+    df = pd.read_excel("price.xlsx")
+except:
+    df = None
+    print("⚠️ Прайс не загружен")
 
-# 👨‍💼 ваш Telegram ID
-ADMIN_CHAT_ID = 123456789  # ВСТАВЬТЕ СВОЙ ID
-
-# 📂 прайс
-PRICE_FILE = "price.xlsx"
-
-
-# 🌍 язык
+# ====== ОПРЕДЕЛЕНИЕ ЯЗЫКА ======
 def detect_language(text):
     ua_chars = set("іїєґ")
     if any(c in ua_chars for c in text.lower()):
         return "ua"
     return "ru"
 
+# ====== ПОИСК В ПРАЙСЕ ======
+def search_price(query):
+    if df is None:
+        return None
 
-# 🧠 intent
-def detect_intent(text):
+    results = df[df.iloc[:, 0].astype(str).str.contains(query, case=False, na=False)]
+
+    if results.empty:
+        return None
+
+    row = results.iloc[0]
+
+    name = str(row.iloc[0])
+    price = str(row.iloc[1])
+
+    return f"{name} — {price} грн"
+
+# ====== GPT ======
+def ask_gpt(text):
+
+    lang = detect_language(text)
+
+    if lang == "ua":
+        system_prompt = """
+Ти менеджер магазину автозапчастин AUTOMAG.
+
+Твоя задача:
+- продавати запчастини
+- допомагати клієнту
+- уточнювати авто
+- працювати як живий менеджер
+
+НЕ вигадуй ціни — кажи, що перевіряєш по прайсу.
+"""
+    else:
+        system_prompt = """
+Ты менеджер магазина автозапчастей AUTOMAG.
+
+Задача:
+- продавать
+- уточнять авто
+- вести к покупке
+
+НЕ придумывай цены — говори, что проверяешь по прайсу.
+"""
+
     try:
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": """Определи тип запроса:
-article — номер детали
-vin — VIN код
-search — подбор
-
-Ответь одним словом."""
-                },
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
             ]
         )
-        return response.choices[0].message.content.strip().lower()
-    except:
-        return "search"
-
-
-# 🚗 VIN → авто
-def detect_car_by_vin(vin):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Определи марку, модель и год авто по VIN. Коротко."
-                },
-                {"role": "user", "content": vin}
-            ]
-        )
         return response.choices[0].message.content
-    except:
-        return "Не удалось определить авто"
 
-
-# 🔎 поиск
-def search_by_article(article):
-    try:
-        df = pd.read_excel(PRICE_FILE)
-
-        results = df[df["номер"].astype(str).str.contains(article, case=False, na=False)]
-
-        parts = []
-        for _, row in results.head(3).iterrows():
-            price = int(row["цена"] * 1.15)
-
-            parts.append({
-                "name": row["бренд"],
-                "price": price,
-                "stock": row["наличие"]
-            })
-
-        return parts
     except Exception as e:
-        print("Ошибка прайса:", e)
-        return []
+        return f"Ошибка GPT: {str(e)}"
 
-
-# 🔘 кнопки
-def send_buttons(chat_id, lang):
-    if lang == "ua":
-        text = "Оберіть варіант:"
-        keyboard = {
-            "keyboard": [
-                [{"text": "🔍 Підбір по VIN"}],
-                [{"text": "📦 У мене є номер деталі"}]
-            ],
-            "resize_keyboard": True
-        }
-    else:
-        text = "Выберите вариант:"
-        keyboard = {
-            "keyboard": [
-                [{"text": "🔍 Подбор по VIN"}],
-                [{"text": "📦 У меня есть номер детали"}]
-            ],
-            "resize_keyboard": True
-        }
-
-    requests.post(URL + "/sendMessage", json={
+# ====== ОТПРАВКА ======
+def send_message(chat_id, text):
+    url = f"{TELEGRAM_URL}/sendMessage"
+    requests.post(url, json={
         "chat_id": chat_id,
-        "text": text,
-        "reply_markup": keyboard
+        "text": text
     })
 
+# ====== ПРОВЕРКА ЗАКАЗА (ЗАГЛУШКА) ======
+def check_order(order_id):
+    # тут потом подключим API
+    return f"Заказ {order_id}: в обработке"
 
-# 🤖 GPT fallback
-def get_gpt_response(user_id, user_message):
+# ====== WEBHOOK ======
+@app.post("/")
+async def webhook(request: Request):
+    data = await request.json()
 
-    lang = detect_language(user_message)
-
-    if user_id not in user_sessions:
-
-        system_text = """Ты менеджер магазина автозапчастей AUTOMAG.
-
-Отвечай коротко.
-Сначала выясни:
-- номер детали или подбор
-
-Не выдумывай данные.
-"""
-
-        if lang == "ua":
-            system_text += "\nВідповідай українською."
-        else:
-            system_text += "\nОтвечай на русском."
-
-        user_sessions[user_id] = [{"role": "system", "content": system_text}]
-
-    user_sessions[user_id].append({"role": "user", "content": user_message})
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=user_sessions[user_id]
-    )
-
-    reply = response.choices[0].message.content
-
-    user_sessions[user_id].append({"role": "assistant", "content": reply})
-
-    if len(user_sessions[user_id]) > 10:
-        user_sessions[user_id] = user_sessions[user_id][-10:]
-
-    return reply
-
-
-@app.get("/")
-def home():
-    return {"status": "ok"}
-
-
-@app.post("/webhook")
-async def webhook(req: Request):
-    data = await req.json()
-
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
-
-        lang = detect_language(text)
-        intent = detect_intent(text)
-        text_lower = text.lower()
-
-        # 🚀 старт
-        if text == "/start":
-            send_buttons(chat_id, lang)
+    try:
+        message = data.get("message")
+        if not message:
             return {"ok": True}
 
-        # 🔘 кнопка VIN
-        if "vin" in text_lower:
-            reply = "Напишите VIN код" if lang == "ru" else "Напишіть VIN код"
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "").lower()
 
-        # 🔘 кнопка номер
-        elif "номер" in text_lower:
-            reply = "Напишите номер детали" if lang == "ru" else "Напишіть номер деталі"
+        # ===== VIN → менеджеру =====
+        if "vin" in text or len(text) == 17:
+            send_message(chat_id, "Передаю менеджеру 👌")
+            if ADMIN_CHAT_ID:
+                send_message(ADMIN_CHAT_ID, f"🔥 Клиент отправил VIN:\n{text}")
+            return {"ok": True}
 
-        # 🔥 VIN
-        elif intent == "vin":
-            car = detect_car_by_vin(text)
+        # ===== СТАТУС ЗАКАЗА =====
+        if "заказ" in text or "order" in text:
+            send_message(chat_id, "Напиши номер заказа 👌")
+            return {"ok": True}
 
-            reply = f"{car}\nПередаю менеджеру 👍" if lang == "ru" else f"{car}\nПередаю менеджеру 👍"
+        if text.isdigit():
+            status = check_order(text)
+            send_message(chat_id, status)
+            return {"ok": True}
 
-            requests.post(URL + "/sendMessage", json={
-                "chat_id": ADMIN_CHAT_ID,
-                "text": f"Заявка VIN\nКлиент: {chat_id}\n{text}\n{car}"
-            })
-
-        # 🔥 номер детали
-        elif intent == "article":
-            parts = search_by_article(text)
-
-            if parts:
-                reply = "Вот варианты:\n\n" if lang == "ru" else "Ось варіанти:\n\n"
-                for p in parts:
-                    reply += f"{p['name']} — {p['price']} грн ({p['stock']})\n"
+        # ===== ПОИСК ЦЕНЫ =====
+        if "цена" in text or "сколько" in text:
+            result = search_price(text)
+            if result:
+                send_message(chat_id, f"Нашёл 👇\n{result}")
             else:
-                reply = "Не нашёл, напишите VIN" if lang == "ru" else "Не знайшов, напишіть VIN"
+                send_message(chat_id, "Не нашёл, сейчас уточню 👌")
+            return {"ok": True}
 
-        # 🔥 подбор
-        elif intent == "search":
-            reply = "Напишите VIN для подбора" if lang == "ru" else "Напишіть VIN для підбору"
+        # ===== GPT =====
+        reply = ask_gpt(text)
+        send_message(chat_id, reply)
 
-        # 🤖 fallback
-        else:
-            reply = get_gpt_response(chat_id, text)
-
-        requests.post(URL + "/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply
-        })
+    except Exception as e:
+        print("Ошибка:", e)
 
     return {"ok": True}
