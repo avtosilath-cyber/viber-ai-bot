@@ -13,7 +13,7 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# ====== ФУНКЦИЯ ОЧИСТКИ ======
+# ====== ЧИСТКА ======
 def clean(text):
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
 
@@ -25,7 +25,11 @@ try:
         with z.open(file_name) as f:
             df = pd.read_excel(f)
 
-    df.columns = df.columns.str.strip().str.lower()
+    # ЖЁСТКО задаём структуру
+    df.columns = ["id", "article", "brand", "name", "price", "qty_total"]
+
+    df["article"] = df["article"].astype(str)
+    df["name"] = df["name"].astype(str)
 
     df["article_clean"] = df["article"].apply(clean)
     df["name_clean"] = df["name"].apply(clean)
@@ -34,7 +38,7 @@ try:
 
 except Exception as e:
     df = None
-    print("❌ Ошибка:", e)
+    print("❌ Ошибка загрузки прайса:", e)
 
 # ====== ПАМЯТЬ ======
 users = {}
@@ -52,7 +56,7 @@ def notify_manager(reason, user_text, chat_id):
         return
 
     msg = f"""
-🔥 КЛИЕНТ НУЖДАЕТСЯ В МЕНЕДЖЕРЕ
+🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
 
 Причина: {reason}
 
@@ -62,7 +66,6 @@ def notify_manager(reason, user_text, chat_id):
 ID:
 {chat_id}
 """
-
     send(ADMIN_CHAT_ID, msg)
 
 # ====== ПОИСК ======
@@ -72,34 +75,33 @@ def search(query):
 
     q = clean(query)
 
-    # ищем по совпадению
-    results = df[
-        df["article_clean"].str.contains(q) |
-        df["name_clean"].str.contains(q)
-    ]
+    # 🔥 1. ТОЧНЫЙ АРТИКУЛ
+    exact = df[df["article_clean"] == q]
 
-    # если не нашли — ищем по частям
-    if results.empty:
-        parts = [p for p in re.split(r"\s+", query.lower()) if len(p) > 2]
+    if not exact.empty:
+        results = exact
 
-        for p in parts:
-            p_clean = clean(p)
-            temp = df[
-                df["article_clean"].str.contains(p_clean) |
-                df["name_clean"].str.contains(p_clean)
-            ]
-            results = pd.concat([results, temp])
+    else:
+        # 🔥 2. ЧАСТИЧНЫЙ ПОИСК
+        results = df[
+            df["article_clean"].str.contains(q) |
+            df["name_clean"].str.contains(q)
+        ]
 
     if results.empty:
         return None
 
-    results = results.drop_duplicates().head(3)
+    # 🔥 сортировка: сначала наличие
+    results = results.sort_values(by="qty_total", ascending=False)
+
+    results = results.head(3)
 
     answer = []
 
     for _, row in results.iterrows():
         try:
-            name = str(row["name"])
+            article = row["article"]
+            name = row["name"]
             price = float(row["price"])
             qty = int(row.get("qty_total", 0))
         except:
@@ -108,9 +110,9 @@ def search(query):
         final_price = int(round(price * 1.15 / 10) * 10)
 
         if qty > 0:
-            answer.append(f"{name} — {final_price} грн (есть: {qty})")
+            answer.append(f"{article} | {name} — {final_price} грн (в наличии: {qty})")
         else:
-            answer.append(f"{name} — {final_price} грн (под заказ)")
+            answer.append(f"{article} | {name} — {final_price} грн (под заказ)")
 
     return "\n".join(answer)
 
@@ -151,7 +153,7 @@ async def webhook(request: Request):
         result = search(text)
 
         if result:
-            send(chat_id, f"Нашёл варианты:\n\n{result}\n\nОформляем?")
+            send(chat_id, f"Вот что есть:\n\n{result}\n\nОформляем?")
             return {"ok": True}
 
         # ===== НЕ НАШЛИ =====
