@@ -63,37 +63,15 @@ def notify_manager(reason, user_text, chat_id):
 Сообщение:
 {user_text}
 
-ID:
+ID клиента:
 {chat_id}
 """
     send(ADMIN_CHAT_ID, msg)
 
-# ====== ПОИСК ======
-def search(query):
-    if df is None:
-        return None
-
-    q = clean(query)
-
-    # 🔥 1. ТОЧНЫЙ АРТИКУЛ
-    exact = df[df["article_clean"] == q]
-
-    if not exact.empty:
-        results = exact
-
-    else:
-        # 🔥 2. ЧАСТИЧНЫЙ ПОИСК
-        results = df[
-            df["article_clean"].str.contains(q) |
-            df["name_clean"].str.contains(q)
-        ]
-
-    if results.empty:
-        return None
-
-    # 🔥 сортировка: сначала наличие
+# ====== ФОРМАТ ВЫВОДА ======
+def format_results(results):
+    results = results.drop_duplicates()
     results = results.sort_values(by="qty_total", ascending=False)
-
     results = results.head(3)
 
     answer = []
@@ -116,7 +94,46 @@ def search(query):
 
     return "\n".join(answer)
 
-# ====== ЛОГИКА ======
+# ====== ПОИСК ======
+def search(query):
+    if df is None:
+        return None
+
+    words = query.lower().split()
+
+    # 🔥 1. ищем точный артикул
+    for word in words:
+        q = clean(word)
+
+        if len(q) < 3:
+            continue
+
+        exact = df[df["article_clean"] == q]
+        if not exact.empty:
+            return format_results(exact)
+
+    # 🔥 2. ищем по частям
+    results = pd.DataFrame()
+
+    for word in words:
+        q = clean(word)
+
+        if len(q) < 3:
+            continue
+
+        temp = df[
+            df["article_clean"].str.contains(q) |
+            df["name_clean"].str.contains(q)
+        ]
+
+        results = pd.concat([results, temp])
+
+    if results.empty:
+        return None
+
+    return format_results(results)
+
+# ====== ОСНОВНАЯ ЛОГИКА ======
 @app.post("/")
 async def webhook(request: Request):
     data = await request.json()
@@ -158,7 +175,7 @@ async def webhook(request: Request):
 
         # ===== НЕ НАШЛИ =====
         send(chat_id, "Не нашли в наличии. Передаю менеджеру 👌")
-        notify_manager("Не найдено", text, chat_id)
+        notify_manager("Не найдено в прайсе", text, chat_id)
 
         return {"ok": True}
 
