@@ -12,24 +12,27 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-if not TELEGRAM_TOKEN:
-    raise ValueError("❌ TELEGRAM_TOKEN не задан")
-
-if not OPENAI_API_KEY:
-    raise ValueError("❌ OPENAI_API_KEY не задан")
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ====== ЗАГРУЗКА ПРАЙСА ИЗ ZIP ======
 try:
     with zipfile.ZipFile("merged_min_price.zip") as z:
-        file_name = z.namelist()[0]  # берём первый файл внутри
+        file_name = z.namelist()[0]
 
         with z.open(file_name) as f:
             df = pd.read_excel(f)
 
     df.columns = df.columns.str.strip().str.lower()
+
+    # 👉 сразу чистим артикулы
+    df["article_clean"] = (
+        df["article"]
+        .astype(str)
+        .str.lower()
+        .str.replace(" ", "")
+        .str.replace("-", "")
+    )
 
     print("✅ Прайс загружен")
 
@@ -47,45 +50,48 @@ def detect_language(text):
         return "ua"
     return "ru"
 
-# ====== ПОИСК ======
+# ====== ПОИСК (УЛУЧШЕННЫЙ) ======
 def search_price(query):
     if df is None:
         return None
 
-    query = query.lower().strip()
+    q = query.lower().replace(" ", "").replace("-", "")
 
-    # поиск по артикулу
-    article_match = df[df["article"].astype(str).str.lower() == query]
+    # 🔥 поиск по артикулу (гибкий)
+    article_match = df[df["article_clean"].str.contains(q)]
 
     if not article_match.empty:
-        row = article_match.iloc[0]
+        results = article_match.head(3)
     else:
-        # поиск по названию
-        name_match = df[df["name"].astype(str).str.lower().str.contains(query)]
+        # 🔍 поиск по названию
+        name_match = df[df["name"].astype(str).str.lower().str.contains(query.lower())]
 
         if name_match.empty:
             return None
 
-        row = name_match.iloc[0]
+        results = name_match.head(3)
 
-    try:
-        name = str(row["name"])
-        base_price = float(row["price"])
-        qty = int(row.get("qty_total", 0))
-    except:
-        return None
+    answers = []
 
-    # наценка + округление
-    final_price = int(round(base_price * 1.15 / 10) * 10)
+    for _, row in results.iterrows():
+        try:
+            name = str(row["name"])
+            base_price = float(row["price"])
+            qty = int(row.get("qty_total", 0))
+        except:
+            continue
 
-    if qty > 0:
-        return f"{name} — {final_price} грн\nВ наличии: {qty} шт"
-    else:
-        return f"{name} — {final_price} грн\nПод заказ 👌"
+        final_price = int(round(base_price * 1.15 / 10) * 10)
+
+        if qty > 0:
+            answers.append(f"{name} — {final_price} грн (в наличии: {qty})")
+        else:
+            answers.append(f"{name} — {final_price} грн (под заказ)")
+
+    return "\n".join(answers)
 
 # ====== GPT ======
 def ask_gpt(text, is_new_user):
-
     lang = detect_language(text)
 
     greeting = ""
@@ -100,6 +106,7 @@ def ask_gpt(text, is_new_user):
 
 Правила:
 - не вигадуй ціни
+- якщо немає в прайсі — запропонуй допомогу
 - не здоровайся кожен раз
 - відповідай коротко
 """
@@ -111,6 +118,7 @@ def ask_gpt(text, is_new_user):
 
 Правила:
 - не придумывай цены
+- если нет в прайсе — предложи помощь
 - не здоровайся каждый раз
 - отвечай кратко
 """
