@@ -9,7 +9,7 @@ app = FastAPI()
 # ====== ПЕРЕМЕННЫЕ ======
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # твой телеграм id
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_TOKEN не задан")
@@ -23,21 +23,21 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # ====== TELEGRAM ======
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# ====== ЗАГРУЗКА ПРАЙСА ======
+# ====== ПРАЙС ======
 try:
     df = pd.read_excel("price.xlsx")
 except:
     df = None
     print("⚠️ Прайс не загружен")
 
-# ====== ОПРЕДЕЛЕНИЕ ЯЗЫКА ======
+# ====== ЯЗЫК ======
 def detect_language(text):
     ua_chars = set("іїєґ")
     if any(c in ua_chars for c in text.lower()):
         return "ua"
     return "ru"
 
-# ====== ПОИСК В ПРАЙСЕ ======
+# ====== ПОИСК ЦЕНЫ ======
 def search_price(query):
     if df is None:
         return None
@@ -50,9 +50,16 @@ def search_price(query):
     row = results.iloc[0]
 
     name = str(row.iloc[0])
-    price = str(row.iloc[1])
 
-    return f"{name} — {price} грн"
+    try:
+        base_price = float(row.iloc[1])
+    except:
+        return None
+
+    # 💰 +15% и округление до десятков
+    final_price = int(round(base_price * 1.15 / 10) * 10)
+
+    return f"{name} — {final_price} грн"
 
 # ====== GPT ======
 def ask_gpt(text):
@@ -63,24 +70,29 @@ def ask_gpt(text):
         system_prompt = """
 Ти менеджер магазину автозапчастин AUTOMAG.
 
-Твоя задача:
-- продавати запчастини
-- допомагати клієнту
-- уточнювати авто
-- працювати як живий менеджер
+Ти:
+- продаєш запчастини
+- уточнюєш авто
+- ведеш клієнта до покупки
 
-НЕ вигадуй ціни — кажи, що перевіряєш по прайсу.
+Правила:
+- не вигадуй ціни
+- якщо питають ціну — скажи що перевіряєш по прайсу
+- відповідай коротко і по суті
 """
     else:
         system_prompt = """
 Ты менеджер магазина автозапчастей AUTOMAG.
 
-Задача:
-- продавать
-- уточнять авто
-- вести к покупке
+Ты:
+- продаёшь запчасти
+- уточняешь авто
+- ведёшь к покупке
 
-НЕ придумывай цены — говори, что проверяешь по прайсу.
+Правила:
+- не придумывай цены
+- если спрашивают цену — говори, что проверяешь по прайсу
+- отвечай кратко
 """
 
     try:
@@ -98,16 +110,14 @@ def ask_gpt(text):
 
 # ====== ОТПРАВКА ======
 def send_message(chat_id, text):
-    url = f"{TELEGRAM_URL}/sendMessage"
-    requests.post(url, json={
+    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
         "chat_id": chat_id,
         "text": text
     })
 
-# ====== ПРОВЕРКА ЗАКАЗА (ЗАГЛУШКА) ======
+# ====== СТАТУС ЗАКАЗА ======
 def check_order(order_id):
-    # тут потом подключим API
-    return f"Заказ {order_id}: в обработке"
+    return f"Заказ {order_id}: в обработке 👌"
 
 # ====== WEBHOOK ======
 @app.post("/")
@@ -120,17 +130,19 @@ async def webhook(request: Request):
             return {"ok": True}
 
         chat_id = message["chat"]["id"]
-        text = message.get("text", "").lower()
+        text = message.get("text", "")
+
+        text_lower = text.lower()
 
         # ===== VIN → менеджеру =====
-        if "vin" in text or len(text) == 17:
+        if "vin" in text_lower or len(text) == 17:
             send_message(chat_id, "Передаю менеджеру 👌")
             if ADMIN_CHAT_ID:
                 send_message(ADMIN_CHAT_ID, f"🔥 Клиент отправил VIN:\n{text}")
             return {"ok": True}
 
         # ===== СТАТУС ЗАКАЗА =====
-        if "заказ" in text or "order" in text:
+        if "заказ" in text_lower or "order" in text_lower:
             send_message(chat_id, "Напиши номер заказа 👌")
             return {"ok": True}
 
@@ -140,7 +152,7 @@ async def webhook(request: Request):
             return {"ok": True}
 
         # ===== ПОИСК ЦЕНЫ =====
-        if "цена" in text or "сколько" in text:
+        if "цена" in text_lower or "сколько" in text_lower:
             result = search_price(text)
             if result:
                 send_message(chat_id, f"Нашёл 👇\n{result}")
