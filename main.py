@@ -1,26 +1,50 @@
 # ================================
-# AUTO PARTS BOT — FULL ALGORITHM
+# AUTO PARTS BOT — PRO VERSION
 # ================================
+
+from flask import Flask, request, jsonify
+import os
+
+app = Flask(__name__)
 
 # ====== CONFIG ======
 
-YES = ["да", "давай", "беру", "оформляем", "подходит", "ок", "окей"]
+YES = ["да", "давай", "беру", "оформляем", "подходит", "ок", "окей", "так"]
 NO = ["нет", "не надо", "не подходит", "дорого", "отмена"]
 
+PHONE = "097-199-13-30"
 
-# ====== CONTEXT ======
+KYIV_ADDRESS = "г. Киев, ул. Гавела 67"
+DNIPRO_ADDRESS = "г. Днепр, пр. Поля 131"
 
-def create_context():
-    return {
-        "stage": "idle",
-        "product": None,
-        "last_query": None,
-        "order": {
-            "city": None,
-            "phone": None,
-            "delivery": None
+# ====== USERS ======
+
+users = {}
+
+def get_context(user_id):
+    if user_id not in users:
+        users[user_id] = {
+            "stage": "idle",
+            "product": None,
+            "last_query": None,
+            "order": {
+                "city": None,
+                "phone": None,
+                "delivery": None
+            },
+            "language": None,
+            "greeted": False
         }
-    }
+    return users[user_id]
+
+
+# ====== LANGUAGE ======
+
+def detect_language(text):
+    ua_words = ["привіт", "дякую", "потрібно", "є", "так"]
+    if any(w in text.lower() for w in ua_words):
+        return "ua"
+    return "ru"
 
 
 # ====== INTENTS ======
@@ -32,187 +56,232 @@ def is_no(text):
     return any(word in text.lower() for word in NO)
 
 
-# ====== MAIN HANDLER ======
+# ====== SEARCH ======
+
+def search_product(query):
+    if "колодки" in query.lower():
+        return {
+            "name": "Тормозные колодки Bosch",
+            "price": 1200,
+            "stock": "в наличии"
+        }
+    return None
+
+
+# ====== TEXTS ======
+
+def greet(lang):
+    if lang == "ua":
+        return f"""Вітаю 👋
+
+Я підберу запчастини для вашого авто 🚗
+
+Напишіть:
+— марку
+— модель
+— рік
+— що потрібно
+
+Або VIN 👌
+
+📞 Для консультації: {PHONE}"""
+    else:
+        return f"""Здравствуйте 👋
+
+Подберу запчасти для вашего авто 🚗
+
+Напишите:
+— марку
+— модель
+— год
+— что нужно
+
+Или VIN 👌
+
+📞 Для консультации: {PHONE}"""
+
+
+def offer(product, lang):
+    if lang == "ua":
+        return f"""{product['name']}
+💰 {product['price']} грн
+📦 {product['stock']}
+
+Оформлюємо?"""
+    else:
+        return f"""{product['name']}
+💰 {product['price']} грн
+📦 {product['stock']}
+
+Оформляем?"""
+
+
+def start_order(lang):
+    if lang == "ua":
+        return f"""Супер 👍
+
+Напишіть:
+📍 Місто
+📞 Телефон
+🚚 Доставка (Нова пошта / самовивіз)
+
+Самовивіз:
+Київ — {KYIV_ADDRESS}
+Дніпро — {DNIPRO_ADDRESS}"""
+    else:
+        return f"""Отлично 👍
+
+Напишите:
+📍 Город
+📞 Телефон
+🚚 Доставка (Новая почта / самовывоз)
+
+Самовывоз:
+Киев — {KYIV_ADDRESS}
+Днепр — {DNIPRO_ADDRESS}"""
+
+
+def not_found(lang):
+    if lang == "ua":
+        return f"""Не знайшов 🤔
+
+Уточніть VIN або деталь
+
+📞 Або телефонуйте: {PHONE}"""
+    else:
+        return f"""Не нашёл 🤔
+
+Уточните VIN или деталь
+
+📞 Или звоните: {PHONE}"""
+
+
+def confirm_order(context, lang):
+    p = context["product"]
+    o = context["order"]
+
+    if lang == "ua":
+        return f"""Готово ✅
+
+{p['name']} — {p['price']} грн
+
+Місто: {o['city']}
+Телефон: {o['phone']}
+Доставка: {o['delivery']}
+
+Менеджер зв'яжеться 👍
+
+📞 {PHONE}"""
+    else:
+        return f"""Готово ✅
+
+{p['name']} — {p['price']} грн
+
+Город: {o['city']}
+Телефон: {o['phone']}
+Доставка: {o['delivery']}
+
+Менеджер свяжется 👍
+
+📞 {PHONE}"""
+
+
+# ====== BOT CORE ======
 
 def handle_message(user_message, context):
 
-    text = user_message.strip().lower()
+    text = user_message.lower()
+
+    # язык
+    if not context["language"]:
+        context["language"] = detect_language(text)
+
+    lang = context["language"]
+
+    # приветствие 1 раз
+    if not context["greeted"]:
+        context["greeted"] = True
+        context["stage"] = "search"
+        return greet(lang)
+
     stage = context["stage"]
 
-    # ====== IDLE ======
-    if stage == "idle":
-        context["stage"] = "search"
-        return ask_search()
-
-    # ====== SEARCH ======
-    elif stage == "search":
-
-        context["last_query"] = user_message
+    # ===== SEARCH =====
+    if stage == "search":
 
         product = search_product(user_message)
 
         if product:
             context["product"] = product
             context["stage"] = "waiting_confirmation"
-            return offer_product(product)
+            return offer(product, lang)
         else:
-            return not_found()
+            return not_found(lang)
 
-    # ====== WAITING CONFIRMATION ======
+    # ===== CONFIRM =====
     elif stage == "waiting_confirmation":
-
-        # ❗ КРИТИЧЕСКОЕ МЕСТО — НЕ ДЕЛАТЬ ПОИСК ЗДЕСЬ
 
         if is_yes(text):
             context["stage"] = "ordering"
-            return start_order()
+            return start_order(lang)
 
         elif is_no(text):
             context["stage"] = "search"
-            context["product"] = None
-            return ask_clarify()
+            return "Ок, напишите что нужно"
 
         else:
-            return repeat_confirmation()
+            return "Оформляем или ещё ищем?"
 
-    # ====== ORDERING ======
+    # ===== ORDER =====
     elif stage == "ordering":
-        return handle_order(user_message, context)
 
-    # ====== DONE ======
+        order = context["order"]
+
+        if not order["city"]:
+            order["city"] = user_message
+            return "Телефон 📞"
+
+        elif not order["phone"]:
+            order["phone"] = user_message
+            return "Доставка? Новая почта / самовывоз"
+
+        elif not order["delivery"]:
+            order["delivery"] = user_message
+            context["stage"] = "done"
+            return confirm_order(context, lang)
+
+    # ===== DONE =====
     elif stage == "done":
-        reset_context(context)
         context["stage"] = "search"
-        return "Если ещё что-то нужно — напишите 👍"
+        return "Если ещё нужно — пишите 👍"
 
-    # ====== FALLBACK ======
-    else:
-        context["stage"] = "search"
-        return "Не понял 🤔 Напишите, что нужно подобрать"
+    return "Напишите, что нужно"
+    
 
+# ====== API ======
 
-# ====== SEARCH FUNCTION ======
-
-def search_product(query):
-
-    # TODO: подключить Excel / API / базу
-
-    # пример:
-    return {
-        "name": "Тормозные колодки Bosch",
-        "price": 1200,
-        "stock": "в наличии"
-    }
-
-    # если ничего не найдено:
-    # return None
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is alive 🚀"
 
 
-# ====== MESSAGES ======
+@app.route("/webhook", methods=["POST"])
+def webhook():
 
-def ask_search():
-    return """Напишите:
-— марку авто
-— модель
-— год
-— что нужно
+    data = request.json
 
-Или VIN 👌"""
+    user_id = str(data.get("user_id", "test"))
+    message = data.get("message", "")
 
+    context = get_context(user_id)
 
-def offer_product(product):
-    return f"""Нашёл 👇
+    reply = handle_message(message, context)
 
-{product['name']}
-💰 {product['price']} грн
-📦 {product['stock']}
-
-Оформляем? 👌"""
+    return jsonify({"reply": reply})
 
 
-def not_found():
-    return """Не нашёл по базе 🤔
+# ====== RUN ======
 
-Уточните:
-— VIN
-— точное название детали
-
-Или передам менеджеру 👨‍🔧"""
-
-
-def repeat_confirmation():
-    return "Оформляем или ещё поискать? 👌"
-
-
-def ask_clarify():
-    return "Ок 👍 Давайте подберём другой вариант. Что нужно?"
-
-
-def start_order():
-    return """Супер, оформляем 👍
-
-Напишите:
-📍 Город
-📞 Телефон
-🚚 Доставка (Новая почта / самовывоз)"""
-
-
-# ====== ORDER FLOW ======
-
-def handle_order(user_message, context):
-
-    order = context["order"]
-
-    # ШАГ 1 — ГОРОД
-    if not order["city"]:
-        order["city"] = user_message
-        return "Введите номер телефона 📞"
-
-    # ШАГ 2 — ТЕЛЕФОН
-    elif not order["phone"]:
-        order["phone"] = user_message
-        return "Способ доставки? Новая почта / самовывоз 🚚"
-
-    # ШАГ 3 — ДОСТАВКА
-    elif not order["delivery"]:
-        order["delivery"] = user_message
-
-        context["stage"] = "done"
-
-        return confirm_order(context)
-
-    return "Оформляем..."
-
-
-# ====== CONFIRM ORDER ======
-
-def confirm_order(context):
-
-    product = context["product"]
-    order = context["order"]
-
-    return f"""Готово ✅
-
-Товар: {product['name']}
-Цена: {product['price']} грн
-
-Город: {order['city']}
-Телефон: {order['phone']}
-Доставка: {order['delivery']}
-
-Передал менеджеру 👨‍🔧
-Скоро свяжутся 👍"""
-
-
-# ====== RESET ======
-
-def reset_context(context):
-
-    context["product"] = None
-    context["last_query"] = None
-
-    context["order"] = {
-        "city": None,
-        "phone": None,
-        "delivery": None
-    }
+if __name__ == "__main__":
+    PORT = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=PORT)
