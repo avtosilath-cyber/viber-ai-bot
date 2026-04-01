@@ -1,231 +1,218 @@
-import os
-import requests
-import pandas as pd
-import re
-from fastapi import FastAPI, Request
+# ================================
+# AUTO PARTS BOT — FULL ALGORITHM
+# ================================
 
-app = FastAPI()
+# ====== CONFIG ======
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-
-TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-users = {}
-
-# ===== ЧИСТКА =====
-def clean(text):
-    text = str(text).lower().strip()
-    text = re.sub(r"[^a-z0-9]", "", text)
-    return text
-
-# ===== ИЗВЛЕЧЕНИЕ АРТИКУЛА =====
-def extract_article(text):
-    words = text.lower().split()
-    for word in words:
-        cleaned = clean(word)
-        if len(cleaned) >= 3 and any(c.isdigit() for c in cleaned):
-            return cleaned
-    return None
-
-# ===== ЗАГРУЗКА ПРАЙСА (УМНАЯ) =====
-def load_price():
-    try:
-        df_raw = pd.read_excel("price.xlsx", header=None)
-
-        print("📊 RAW:")
-        print(df_raw.head(10))
-
-        # 🔥 ищем строку заголовков
-        header_row = None
-        for i in range(15):
-            row = df_raw.iloc[i].astype(str).str.lower()
-            if row.str.contains("артикул").any():
-                header_row = i
-                break
-
-        if header_row is None:
-            print("❌ Не нашли строку заголовков")
-            return None
-
-        print("✅ Заголовки строка:", header_row)
-
-        # читаем нормально
-        df = pd.read_excel("price.xlsx", header=header_row)
-
-        print("📊 Колонки:", df.columns.tolist())
-
-        # 🔥 нормализация названий колонок
-        columns = {str(col).lower(): col for col in df.columns}
-
-        def find_col(keys):
-            for key in columns:
-                for k in keys:
-                    if k in key:
-                        return columns[key]
-            return None
-
-        article_col = find_col(["артикул", "article"])
-        name_col = find_col(["наймен", "name"])
-        price_col = find_col(["ціна", "price"])
-        qty_col = find_col(["кільк", "qty"])
-
-        if not article_col:
-            print("❌ Нет article колонки")
-            return None
-
-        df = df.rename(columns={
-            article_col: "article",
-            name_col: "name" if name_col else None,
-            price_col: "price" if price_col else None,
-            qty_col: "qty_total" if qty_col else None
-        })
-
-        df = df.dropna(subset=["article"])
-
-        df["article"] = df["article"].astype(str)
-        df["name"] = df.get("name", "").astype(str)
-        df["price"] = pd.to_numeric(df.get("price", 0), errors="coerce").fillna(0)
-        df["qty_total"] = pd.to_numeric(df.get("qty_total", 0), errors="coerce").fillna(0)
-
-        df["article_clean"] = df["article"].apply(clean)
-
-        print("✅ Прайс загружен:", len(df))
-
-        return df
-
-    except Exception as e:
-        print("❌ Ошибка:", e)
-        return None
+YES = ["да", "давай", "беру", "оформляем", "подходит", "ок", "окей"]
+NO = ["нет", "не надо", "не подходит", "дорого", "отмена"]
 
 
-df = load_price()
+# ====== CONTEXT ======
 
-# ===== ОТПРАВКА =====
-def send(chat_id, text):
-    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
+def create_context():
+    return {
+        "stage": "idle",
+        "product": None,
+        "last_query": None,
+        "order": {
+            "city": None,
+            "phone": None,
+            "delivery": None
+        }
+    }
 
-# ===== МЕНЕДЖЕР =====
-def notify_manager(reason, text, chat_id):
-    if not ADMIN_CHAT_ID:
-        return
 
-    msg = f"""
-🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
+# ====== INTENTS ======
 
-Причина: {reason}
-Сообщение: {text}
-ID: {chat_id}
-"""
-    send(ADMIN_CHAT_ID, msg)
+def is_yes(text):
+    return any(word in text.lower() for word in YES)
 
-# ===== ФОРМАТ =====
-def format_results(results):
-    results = results.drop_duplicates()
+def is_no(text):
+    return any(word in text.lower() for word in NO)
 
-    in_stock = results[results["qty_total"] > 0]
-    if not in_stock.empty:
-        results = in_stock
 
-    results = results.sort_values(by="price").head(3)
+# ====== MAIN HANDLER ======
 
-    answer = []
+def handle_message(user_message, context):
 
-    for _, row in results.iterrows():
-        article = row["article"]
-        name = row["name"]
-        price = float(row["price"])
-        qty = int(row["qty_total"])
+    text = user_message.strip().lower()
+    stage = context["stage"]
 
-        final_price = int(round(price * 1.15 / 10) * 10)
+    # ====== IDLE ======
+    if stage == "idle":
+        context["stage"] = "search"
+        return ask_search()
 
-        if qty > 0:
-            answer.append(f"{article} | {name} — {final_price} грн (в наличии: {qty})")
+    # ====== SEARCH ======
+    elif stage == "search":
+
+        context["last_query"] = user_message
+
+        product = search_product(user_message)
+
+        if product:
+            context["product"] = product
+            context["stage"] = "waiting_confirmation"
+            return offer_product(product)
         else:
-            answer.append(f"{article} | {name} — {final_price} грн")
+            return not_found()
 
-    return "\n".join(answer)
+    # ====== WAITING CONFIRMATION ======
+    elif stage == "waiting_confirmation":
 
-# ===== ПОИСК =====
-def search(text):
-    if df is None:
-        return None
+        # ❗ КРИТИЧЕСКОЕ МЕСТО — НЕ ДЕЛАТЬ ПОИСК ЗДЕСЬ
 
-    article = extract_article(text)
+        if is_yes(text):
+            context["stage"] = "ordering"
+            return start_order()
 
-    print("🔎 ИЩЕМ:", article)
+        elif is_no(text):
+            context["stage"] = "search"
+            context["product"] = None
+            return ask_clarify()
 
-    if not article:
-        return None
+        else:
+            return repeat_confirmation()
 
-    exact = df[df["article_clean"] == article]
-    if not exact.empty:
-        return format_results(exact)
+    # ====== ORDERING ======
+    elif stage == "ordering":
+        return handle_order(user_message, context)
 
-    contains = df[df["article_clean"].str.contains(article, na=False)]
-    if not contains.empty:
-        return format_results(contains)
+    # ====== DONE ======
+    elif stage == "done":
+        reset_context(context)
+        context["stage"] = "search"
+        return "Если ещё что-то нужно — напишите 👍"
 
-    fallback = df[df["article_clean"].str.contains(article[:4], na=False)]
-    if not fallback.empty:
-        return format_results(fallback)
+    # ====== FALLBACK ======
+    else:
+        context["stage"] = "search"
+        return "Не понял 🤔 Напишите, что нужно подобрать"
 
-    return None
 
-# ===== WEBHOOK =====
-@app.post("/")
-async def webhook(request: Request):
-    data = await request.json()
+# ====== SEARCH FUNCTION ======
 
-    try:
-        message = data.get("message")
-        if not message:
-            return {"ok": True}
+def search_product(query):
 
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
-        text_lower = text.lower()
+    # TODO: подключить Excel / API / базу
 
-        if chat_id not in users:
-            users[chat_id] = {"started": False, "last": ""}
+    # пример:
+    return {
+        "name": "Тормозные колодки Bosch",
+        "price": 1200,
+        "stock": "в наличии"
+    }
 
-        user = users[chat_id]
+    # если ничего не найдено:
+    # return None
 
-        if user["last"] == text:
-            return {"ok": True}
 
-        user["last"] = text
+# ====== MESSAGES ======
 
-        if not user["started"]:
-            send(chat_id, "Подберу запчасть 👌 Напишите артикул или название.")
-            user["started"] = True
-            return {"ok": True}
+def ask_search():
+    return """Напишите:
+— марку авто
+— модель
+— год
+— что нужно
 
-        if "vin" in text_lower or len(text.strip()) == 17:
-            send(chat_id, "Передаю менеджеру 👌")
-            notify_manager("VIN", text, chat_id)
-            return {"ok": True}
+Или VIN 👌"""
 
-        if "подбор" in text_lower:
-            send(chat_id, "Передаю менеджеру 👌")
-            notify_manager("Подбор", text, chat_id)
-            return {"ok": True}
 
-        result = search(text)
+def offer_product(product):
+    return f"""Нашёл 👇
 
-        if result:
-            send(chat_id, f"{result}\n\nОформляем?")
-            return {"ok": True}
+{product['name']}
+💰 {product['price']} грн
+📦 {product['stock']}
 
-        send(chat_id, "Не нашли. Передаю менеджеру 👌")
-        notify_manager("Не найдено", text, chat_id)
+Оформляем? 👌"""
 
-        return {"ok": True}
 
-    except Exception as e:
-        print("❌ Ошибка:", e)
+def not_found():
+    return """Не нашёл по базе 🤔
 
-    return {"ok": True}
+Уточните:
+— VIN
+— точное название детали
+
+Или передам менеджеру 👨‍🔧"""
+
+
+def repeat_confirmation():
+    return "Оформляем или ещё поискать? 👌"
+
+
+def ask_clarify():
+    return "Ок 👍 Давайте подберём другой вариант. Что нужно?"
+
+
+def start_order():
+    return """Супер, оформляем 👍
+
+Напишите:
+📍 Город
+📞 Телефон
+🚚 Доставка (Новая почта / самовывоз)"""
+
+
+# ====== ORDER FLOW ======
+
+def handle_order(user_message, context):
+
+    order = context["order"]
+
+    # ШАГ 1 — ГОРОД
+    if not order["city"]:
+        order["city"] = user_message
+        return "Введите номер телефона 📞"
+
+    # ШАГ 2 — ТЕЛЕФОН
+    elif not order["phone"]:
+        order["phone"] = user_message
+        return "Способ доставки? Новая почта / самовывоз 🚚"
+
+    # ШАГ 3 — ДОСТАВКА
+    elif not order["delivery"]:
+        order["delivery"] = user_message
+
+        context["stage"] = "done"
+
+        return confirm_order(context)
+
+    return "Оформляем..."
+
+
+# ====== CONFIRM ORDER ======
+
+def confirm_order(context):
+
+    product = context["product"]
+    order = context["order"]
+
+    return f"""Готово ✅
+
+Товар: {product['name']}
+Цена: {product['price']} грн
+
+Город: {order['city']}
+Телефон: {order['phone']}
+Доставка: {order['delivery']}
+
+Передал менеджеру 👨‍🔧
+Скоро свяжутся 👍"""
+
+
+# ====== RESET ======
+
+def reset_context(context):
+
+    context["product"] = None
+    context["last_query"] = None
+
+    context["order"] = {
+        "city": None,
+        "phone": None,
+        "delivery": None
+    }
