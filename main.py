@@ -8,16 +8,44 @@ app = FastAPI()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 users = {}
+df = None
+
+
+# ===== ОТПРАВКА =====
+def send(chat_id, text):
+    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
+
+
+# ===== МЕНЕДЖЕР =====
+def notify_manager(reason, text, chat_id):
+    if not ADMIN_CHAT_ID:
+        return
+
+    msg = f"""
+🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
+
+Причина: {reason}
+Сообщение: {text}
+ID клиента: {chat_id}
+
+👉 Открыть чат:
+https://t.me/{chat_id}
+"""
+    send(ADMIN_CHAT_ID, msg)
+
 
 # ===== ЧИСТКА =====
 def clean(text):
     text = str(text).lower().strip()
     text = re.sub(r"[^a-z0-9]", "", text)
     return text
+
 
 # ===== ИЗВЛЕЧЕНИЕ АРТИКУЛА =====
 def extract_article(text):
@@ -28,15 +56,100 @@ def extract_article(text):
             return cleaned
     return None
 
-# ===== ЗАГРУЗКА ПРАЙСА (УМНАЯ) =====
+
+# ===== ФОРМАТ =====
+def format_results(results):
+    results = results.drop_duplicates()
+
+    in_stock = results[results["qty_total"] > 0]
+    if not in_stock.empty:
+        results = in_stock
+
+    results = results.sort_values(by="price").head(3)
+
+    answer = []
+
+    for _, row in results.iterrows():
+        article = row["article"]
+        name = row["name"]
+        price = float(row["price"])
+        qty = int(row["qty_total"])
+
+        final_price = int(round(price * 1.15 / 10) * 10)
+
+        if qty > 0:
+            answer.append(f"{article} | {name} — {final_price} грн (в наличии: {qty})")
+        else:
+            answer.append(f"{article} | {name} — {final_price} грн")
+
+    return "\n".join(answer)
+
+
+# ===== АНАЛОГИ =====
+def get_analogs(article):
+    if not article:
+        return None
+
+    analogs = df[df["article_clean"].str.contains(article[:5], na=False)]
+
+    if analogs.empty:
+        return None
+
+    analogs = analogs.sort_values(by="price").head(3)
+
+    return format_results(analogs)
+
+
+# ===== ПОИСК =====
+def search(text):
+    if df is None:
+        return None
+
+    article = extract_article(text)
+
+    print("🔎 ИЩЕМ:", article)
+
+    if not article:
+        return None
+
+    exact = df[df["article_clean"] == article]
+    if not exact.empty:
+        result = format_results(exact)
+
+        analogs = get_analogs(article)
+        if analogs:
+            result += "\n\n🔁 Аналоги:\n" + analogs
+
+        return result
+
+    contains = df[df["article_clean"].str.contains(article, na=False)]
+    if not contains.empty:
+        result = format_results(contains)
+
+        analogs = get_analogs(article)
+        if analogs:
+            result += "\n\n🔁 Аналоги:\n" + analogs
+
+        return result
+
+    fallback = df[df["article_clean"].str.contains(article[:4], na=False)]
+    if not fallback.empty:
+        result = format_results(fallback)
+
+        analogs = get_analogs(article)
+        if analogs:
+            result += "\n\n🔁 Аналоги:\n" + analogs
+
+        return result
+
+    return None
+
+
+# ===== ЗАГРУЗКА ПРАЙСА =====
 def load_price():
     try:
         df_raw = pd.read_excel("price.xlsx", header=None)
 
-        print("📊 RAW:")
-        print(df_raw.head(10))
-
-        # 🔥 ищем строку заголовков
         header_row = None
         for i in range(15):
             row = df_raw.iloc[i].astype(str).str.lower()
@@ -48,14 +161,8 @@ def load_price():
             print("❌ Не нашли строку заголовков")
             return None
 
-        print("✅ Заголовки строка:", header_row)
-
-        # читаем нормально
         df = pd.read_excel("price.xlsx", header=header_row)
 
-        print("📊 Колонки:", df.columns.tolist())
-
-        # 🔥 нормализация названий колонок
         columns = {str(col).lower(): col for col in df.columns}
 
         def find_col(keys):
@@ -65,13 +172,13 @@ def load_price():
                         return columns[key]
             return None
 
-        article_col = find_col(["артикул", "article"])
-        name_col = find_col(["наймен", "name"])
-        price_col = find_col(["ціна", "price"])
-        qty_col = find_col(["кільк", "qty"])
+        article_col = find_col(["артикул"])
+        name_col = find_col(["название", "наименование"])
+        price_col = find_col(["цена"])
+        qty_col = find_col(["остаток", "qty"])
 
         if not article_col:
-            print("❌ Нет article колонки")
+            print("❌ Нет колонки артикул")
             return None
 
         df = df.rename(columns={
@@ -101,131 +208,86 @@ def load_price():
 
 df = load_price()
 
-# ===== ОТПРАВКА =====
-def send(chat_id, text):
-    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
 
-# ===== МЕНЕДЖЕР =====
-def notify_manager(reason, text, chat_id):
-    if not ADMIN_CHAT_ID:
+# ===== ОСНОВНАЯ ЛОГИКА =====
+def handle_message(chat_id, text):
+    text_lower = text.lower()
+
+    if chat_id not in users:
+        users[chat_id] = {"started": False, "last": ""}
+
+    user = users[chat_id]
+
+    if user["last"] == text:
         return
 
-    msg = f"""
-🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
+    user["last"] = text
 
-Причина: {reason}
-Сообщение: {text}
-ID: {chat_id}
-"""
-    send(ADMIN_CHAT_ID, msg)
+    # ответы клиента
+    if text.strip() in ["1", "да", "Да"]:
+        send(chat_id, "🔥 Отлично! Передаю менеджеру для оформления")
+        notify_manager("Оформление", text, chat_id)
+        return
 
-# ===== ФОРМАТ =====
-def format_results(results):
-    results = results.drop_duplicates()
+    if text.strip() == "2":
+        send(chat_id, "🔁 Подбираю аналоги...")
+        analogs = get_analogs(user.get("last", ""))
 
-    in_stock = results[results["qty_total"] > 0]
-    if not in_stock.empty:
-        results = in_stock
-
-    results = results.sort_values(by="price").head(3)
-
-    answer = []
-
-    for _, row in results.iterrows():
-        article = row["article"]
-        name = row["name"]
-        price = float(row["price"])
-        qty = int(row["qty_total"])
-
-        final_price = int(round(price * 1.15 / 10) * 10)
-
-        if qty > 0:
-            answer.append(f"{article} | {name} — {final_price} грн (в наличии: {qty})")
+        if analogs:
+            send(chat_id, analogs)
         else:
-            answer.append(f"{article} | {name} — {final_price} грн")
+            send(chat_id, "Передаю менеджеру для подбора 👌")
+            notify_manager("Подбор аналогов", text, chat_id)
+        return
 
-    return "\n".join(answer)
+    if text.strip() == "3":
+        send(chat_id, "Передаю менеджеру 👌")
+        notify_manager("Вопрос клиента", text, chat_id)
+        return
 
-# ===== ПОИСК =====
-def search(text):
-    if df is None:
-        return None
+    if not user["started"]:
+        send(chat_id, "Подберу запчасть 🔧 Напишите артикул или название")
+        user["started"] = True
+        return
 
-    article = extract_article(text)
+    if "vin" in text_lower or len(text.strip()) == 17:
+        send(chat_id, "Передаю менеджеру 👌")
+        notify_manager("VIN", text, chat_id)
+        return
 
-    print("🔎 ИЩЕМ:", article)
+    if "подбор" in text_lower:
+        send(chat_id, "Передаю менеджеру 👌")
+        notify_manager("Подбор", text, chat_id)
+        return
 
-    if not article:
-        return None
+    result = search(text)
 
-    exact = df[df["article_clean"] == article]
-    if not exact.empty:
-        return format_results(exact)
+    if result:
+        send(chat_id, f"""{result}
 
-    contains = df[df["article_clean"].str.contains(article, na=False)]
-    if not contains.empty:
-        return format_results(contains)
+✅ Есть в наличии
+🚚 Быстрая отправка
 
-    fallback = df[df["article_clean"].str.contains(article[:4], na=False)]
-    if not fallback.empty:
-        return format_results(fallback)
+Оформляем заказ? Напишите:
+1️⃣ Да
+2️⃣ Нужен аналог
+3️⃣ Есть вопрос""")
+        return
 
-    return None
+    send(chat_id, "Не нашли. Передаю менеджеру 👌")
+    notify_manager("Не найдено", text, chat_id)
+
 
 # ===== WEBHOOK =====
 @app.post("/")
 async def webhook(request: Request):
     data = await request.json()
 
-    try:
-        message = data.get("message")
-        if not message:
-            return {"ok": True}
-
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
-        text_lower = text.lower()
-
-        if chat_id not in users:
-            users[chat_id] = {"started": False, "last": ""}
-
-        user = users[chat_id]
-
-        if user["last"] == text:
-            return {"ok": True}
-
-        user["last"] = text
-
-        if not user["started"]:
-            send(chat_id, "Подберу запчасть 👌 Напишите артикул или название.")
-            user["started"] = True
-            return {"ok": True}
-
-        if "vin" in text_lower or len(text.strip()) == 17:
-            send(chat_id, "Передаю менеджеру 👌")
-            notify_manager("VIN", text, chat_id)
-            return {"ok": True}
-
-        if "подбор" in text_lower:
-            send(chat_id, "Передаю менеджеру 👌")
-            notify_manager("Подбор", text, chat_id)
-            return {"ok": True}
-
-        result = search(text)
-
-        if result:
-            send(chat_id, f"{result}\n\nОформляем?")
-            return {"ok": True}
-
-        send(chat_id, "Не нашли. Передаю менеджеру 👌")
-        notify_manager("Не найдено", text, chat_id)
-
+    if "message" not in data:
         return {"ok": True}
 
-    except Exception as e:
-        print("❌ Ошибка:", e)
+    message = data["message"]
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
 
-    return {"ok": True}
+    handle_message(chat_id, text)
