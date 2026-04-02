@@ -1,287 +1,231 @@
-# ================================
-# AUTO PARTS BOT — PRO VERSION
-# ================================
-
-from flask import Flask, request, jsonify
 import os
+import requests
+import pandas as pd
+import re
+from fastapi import FastAPI, Request
 
-app = Flask(__name__)
+app = FastAPI()
 
-# ====== CONFIG ======
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-YES = ["да", "давай", "беру", "оформляем", "подходит", "ок", "окей", "так"]
-NO = ["нет", "не надо", "не подходит", "дорого", "отмена"]
-
-PHONE = "097-199-13-30"
-
-KYIV_ADDRESS = "г. Киев, ул. Гавела 67"
-DNIPRO_ADDRESS = "г. Днепр, пр. Поля 131"
-
-# ====== USERS ======
+TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 users = {}
 
-def get_context(user_id):
-    if user_id not in users:
-        users[user_id] = {
-            "stage": "idle",
-            "product": None,
-            "last_query": None,
-            "order": {
-                "city": None,
-                "phone": None,
-                "delivery": None
-            },
-            "language": None,
-            "greeted": False
-        }
-    return users[user_id]
+# ===== ЧИСТКА =====
+def clean(text):
+    text = str(text).lower().strip()
+    text = re.sub(r"[^a-z0-9]", "", text)
+    return text
 
-
-# ====== LANGUAGE ======
-
-def detect_language(text):
-    ua_words = ["привіт", "дякую", "потрібно", "є", "так"]
-    if any(w in text.lower() for w in ua_words):
-        return "ua"
-    return "ru"
-
-
-# ====== INTENTS ======
-
-def is_yes(text):
-    return any(word in text.lower() for word in YES)
-
-def is_no(text):
-    return any(word in text.lower() for word in NO)
-
-
-# ====== SEARCH ======
-
-def search_product(query):
-    if "колодки" in query.lower():
-        return {
-            "name": "Тормозные колодки Bosch",
-            "price": 1200,
-            "stock": "в наличии"
-        }
+# ===== ИЗВЛЕЧЕНИЕ АРТИКУЛА =====
+def extract_article(text):
+    words = text.lower().split()
+    for word in words:
+        cleaned = clean(word)
+        if len(cleaned) >= 3 and any(c.isdigit() for c in cleaned):
+            return cleaned
     return None
 
+# ===== ЗАГРУЗКА ПРАЙСА (УМНАЯ) =====
+def load_price():
+    try:
+        df_raw = pd.read_excel("price.xlsx", header=None)
 
-# ====== TEXTS ======
+        print("📊 RAW:")
+        print(df_raw.head(10))
 
-def greet(lang):
-    if lang == "ua":
-        return f"""Вітаю 👋
+        # 🔥 ищем строку заголовков
+        header_row = None
+        for i in range(15):
+            row = df_raw.iloc[i].astype(str).str.lower()
+            if row.str.contains("артикул").any():
+                header_row = i
+                break
 
-Я підберу запчастини для вашого авто 🚗
+        if header_row is None:
+            print("❌ Не нашли строку заголовков")
+            return None
 
-Напишіть:
-— марку
-— модель
-— рік
-— що потрібно
+        print("✅ Заголовки строка:", header_row)
 
-Або VIN 👌
+        # читаем нормально
+        df = pd.read_excel("price.xlsx", header=header_row)
 
-📞 Для консультації: {PHONE}"""
-    else:
-        return f"""Здравствуйте 👋
+        print("📊 Колонки:", df.columns.tolist())
 
-Подберу запчасти для вашего авто 🚗
+        # 🔥 нормализация названий колонок
+        columns = {str(col).lower(): col for col in df.columns}
 
-Напишите:
-— марку
-— модель
-— год
-— что нужно
+        def find_col(keys):
+            for key in columns:
+                for k in keys:
+                    if k in key:
+                        return columns[key]
+            return None
 
-Или VIN 👌
+        article_col = find_col(["артикул", "article"])
+        name_col = find_col(["наймен", "name"])
+        price_col = find_col(["ціна", "price"])
+        qty_col = find_col(["кільк", "qty"])
 
-📞 Для консультации: {PHONE}"""
+        if not article_col:
+            print("❌ Нет article колонки")
+            return None
 
+        df = df.rename(columns={
+            article_col: "article",
+            name_col: "name" if name_col else None,
+            price_col: "price" if price_col else None,
+            qty_col: "qty_total" if qty_col else None
+        })
 
-def offer(product, lang):
-    if lang == "ua":
-        return f"""{product['name']}
-💰 {product['price']} грн
-📦 {product['stock']}
+        df = df.dropna(subset=["article"])
 
-Оформлюємо?"""
-    else:
-        return f"""{product['name']}
-💰 {product['price']} грн
-📦 {product['stock']}
+        df["article"] = df["article"].astype(str)
+        df["name"] = df.get("name", "").astype(str)
+        df["price"] = pd.to_numeric(df.get("price", 0), errors="coerce").fillna(0)
+        df["qty_total"] = pd.to_numeric(df.get("qty_total", 0), errors="coerce").fillna(0)
 
-Оформляем?"""
+        df["article_clean"] = df["article"].apply(clean)
 
+        print("✅ Прайс загружен:", len(df))
 
-def start_order(lang):
-    if lang == "ua":
-        return f"""Супер 👍
+        return df
 
-Напишіть:
-📍 Місто
-📞 Телефон
-🚚 Доставка (Нова пошта / самовивіз)
-
-Самовивіз:
-Київ — {KYIV_ADDRESS}
-Дніпро — {DNIPRO_ADDRESS}"""
-    else:
-        return f"""Отлично 👍
-
-Напишите:
-📍 Город
-📞 Телефон
-🚚 Доставка (Новая почта / самовывоз)
-
-Самовывоз:
-Киев — {KYIV_ADDRESS}
-Днепр — {DNIPRO_ADDRESS}"""
+    except Exception as e:
+        print("❌ Ошибка:", e)
+        return None
 
 
-def not_found(lang):
-    if lang == "ua":
-        return f"""Не знайшов 🤔
+df = load_price()
 
-Уточніть VIN або деталь
+# ===== ОТПРАВКА =====
+def send(chat_id, text):
+    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
-📞 Або телефонуйте: {PHONE}"""
-    else:
-        return f"""Не нашёл 🤔
+# ===== МЕНЕДЖЕР =====
+def notify_manager(reason, text, chat_id):
+    if not ADMIN_CHAT_ID:
+        return
 
-Уточните VIN или деталь
+    msg = f"""
+🔥 КЛИЕНТ НУЖЕН МЕНЕДЖЕРУ
 
-📞 Или звоните: {PHONE}"""
+Причина: {reason}
+Сообщение: {text}
+ID: {chat_id}
+"""
+    send(ADMIN_CHAT_ID, msg)
 
+# ===== ФОРМАТ =====
+def format_results(results):
+    results = results.drop_duplicates()
 
-def confirm_order(context, lang):
-    p = context["product"]
-    o = context["order"]
+    in_stock = results[results["qty_total"] > 0]
+    if not in_stock.empty:
+        results = in_stock
 
-    if lang == "ua":
-        return f"""Готово ✅
+    results = results.sort_values(by="price").head(3)
 
-{p['name']} — {p['price']} грн
+    answer = []
 
-Місто: {o['city']}
-Телефон: {o['phone']}
-Доставка: {o['delivery']}
+    for _, row in results.iterrows():
+        article = row["article"]
+        name = row["name"]
+        price = float(row["price"])
+        qty = int(row["qty_total"])
 
-Менеджер зв'яжеться 👍
+        final_price = int(round(price * 1.15 / 10) * 10)
 
-📞 {PHONE}"""
-    else:
-        return f"""Готово ✅
-
-{p['name']} — {p['price']} грн
-
-Город: {o['city']}
-Телефон: {o['phone']}
-Доставка: {o['delivery']}
-
-Менеджер свяжется 👍
-
-📞 {PHONE}"""
-
-
-# ====== BOT CORE ======
-
-def handle_message(user_message, context):
-
-    text = user_message.lower()
-
-    # язык
-    if not context["language"]:
-        context["language"] = detect_language(text)
-
-    lang = context["language"]
-
-    # приветствие 1 раз
-    if not context["greeted"]:
-        context["greeted"] = True
-        context["stage"] = "search"
-        return greet(lang)
-
-    stage = context["stage"]
-
-    # ===== SEARCH =====
-    if stage == "search":
-
-        product = search_product(user_message)
-
-        if product:
-            context["product"] = product
-            context["stage"] = "waiting_confirmation"
-            return offer(product, lang)
+        if qty > 0:
+            answer.append(f"{article} | {name} — {final_price} грн (в наличии: {qty})")
         else:
-            return not_found(lang)
+            answer.append(f"{article} | {name} — {final_price} грн")
 
-    # ===== CONFIRM =====
-    elif stage == "waiting_confirmation":
+    return "\n".join(answer)
 
-        if is_yes(text):
-            context["stage"] = "ordering"
-            return start_order(lang)
+# ===== ПОИСК =====
+def search(text):
+    if df is None:
+        return None
 
-        elif is_no(text):
-            context["stage"] = "search"
-            return "Ок, напишите что нужно"
+    article = extract_article(text)
 
-        else:
-            return "Оформляем или ещё ищем?"
+    print("🔎 ИЩЕМ:", article)
 
-    # ===== ORDER =====
-    elif stage == "ordering":
+    if not article:
+        return None
 
-        order = context["order"]
+    exact = df[df["article_clean"] == article]
+    if not exact.empty:
+        return format_results(exact)
 
-        if not order["city"]:
-            order["city"] = user_message
-            return "Телефон 📞"
+    contains = df[df["article_clean"].str.contains(article, na=False)]
+    if not contains.empty:
+        return format_results(contains)
 
-        elif not order["phone"]:
-            order["phone"] = user_message
-            return "Доставка? Новая почта / самовывоз"
+    fallback = df[df["article_clean"].str.contains(article[:4], na=False)]
+    if not fallback.empty:
+        return format_results(fallback)
 
-        elif not order["delivery"]:
-            order["delivery"] = user_message
-            context["stage"] = "done"
-            return confirm_order(context, lang)
+    return None
 
-    # ===== DONE =====
-    elif stage == "done":
-        context["stage"] = "search"
-        return "Если ещё нужно — пишите 👍"
+# ===== WEBHOOK =====
+@app.post("/")
+async def webhook(request: Request):
+    data = await request.json()
 
-    return "Напишите, что нужно"
-    
+    try:
+        message = data.get("message")
+        if not message:
+            return {"ok": True}
 
-# ====== API ======
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "")
+        text_lower = text.lower()
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is alive 🚀"
+        if chat_id not in users:
+            users[chat_id] = {"started": False, "last": ""}
 
+        user = users[chat_id]
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
+        if user["last"] == text:
+            return {"ok": True}
 
-    data = request.json
+        user["last"] = text
 
-    user_id = str(data.get("user_id", "test"))
-    message = data.get("message", "")
+        if not user["started"]:
+            send(chat_id, "Подберу запчасть 👌 Напишите артикул или название.")
+            user["started"] = True
+            return {"ok": True}
 
-    context = get_context(user_id)
+        if "vin" in text_lower or len(text.strip()) == 17:
+            send(chat_id, "Передаю менеджеру 👌")
+            notify_manager("VIN", text, chat_id)
+            return {"ok": True}
 
-    reply = handle_message(message, context)
+        if "подбор" in text_lower:
+            send(chat_id, "Передаю менеджеру 👌")
+            notify_manager("Подбор", text, chat_id)
+            return {"ok": True}
 
-    return jsonify({"reply": reply})
+        result = search(text)
 
+        if result:
+            send(chat_id, f"{result}\n\nОформляем?")
+            return {"ok": True}
 
-# ====== RUN ======
+        send(chat_id, "Не нашли. Передаю менеджеру 👌")
+        notify_manager("Не найдено", text, chat_id)
 
-if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=PORT)
+        return {"ok": True}
+
+    except Exception as e:
+        print("❌ Ошибка:", e)
+
+    return {"ok": True}
