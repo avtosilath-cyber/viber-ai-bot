@@ -6,7 +6,7 @@ TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 bot = telebot.TeleBot(TOKEN)
 
 # ===== ЗАГРУЗКА ПРАЙСА =====
-df = pd.read_excel("prices.xlsx")
+df = pd.read_excel("price.xlsx")
 
 df["article_clean"] = df["article"].astype(str).str.lower().str.replace(r'[^a-z0-9]', '', regex=True)
 df = df[df["stock"] > 0]
