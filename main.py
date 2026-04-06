@@ -2,7 +2,7 @@ import telebot
 import pandas as pd
 import re
 
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TOKEN = "7718207145:AAHlhWE0WwsJOXNyUsjAX5gDbhvu9CE4KwM"
 bot = telebot.TeleBot(TOKEN)
 
 # ===== ЗАГРУЗКА ПРАЙСА =====
