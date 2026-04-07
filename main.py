@@ -7,7 +7,36 @@ bot = telebot.TeleBot(TOKEN)
 
 # ===== ЗАГРУЗКА ПРАЙСА =====
 df = pd.read_excel("price.xlsx")
+import pandas as pd
 
+df = pd.read_excel("price.xlsx")
+
+# 1. Нормализуем названия колонок
+df.columns = df.columns.str.strip().str.lower()
+
+print("Колонки:", df.columns.tolist())
+
+# 2. Маппинг колонок (приводим к единому виду)
+column_map = {
+    "артикул": "article",
+    "код": "article",
+    "article": "article",
+    "sku": "article",
+}
+
+df.rename(columns=column_map, inplace=True)
+
+# 3. Проверка
+if "article" not in df.columns:
+    raise Exception(f"❌ Нет колонки article. Найдено: {df.columns.tolist()}")
+
+# 4. Теперь безопасно работаем
+df["article_clean"] = (
+    df["article"]
+    .astype(str)
+    .str.lower()
+    .str.replace(r"[^a-z0-9]", "", regex=True)
+)
 df["article_clean"] = df["article"].astype(str).str.lower().str.replace(r'[^a-z0-9]', '', regex=True)
 df = df[df["stock"] > 0]
 
