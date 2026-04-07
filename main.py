@@ -9,7 +9,6 @@ bot = telebot.TeleBot(TOKEN)
 df = pd.read_excel("price.xlsx")
 import pandas as pd
 
-df = pd.read_excel("price.xlsx")
 
 # 1. Нормализуем названия колонок
 df.columns = df.columns.str.strip().str.lower()
