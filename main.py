@@ -279,7 +279,9 @@ def handle_message(chat_id, text):
 
 
 # ===== WEBHOOK =====
-@app.post("/")
+@app.post("/")@app.get("/")
+def root():
+    return {"status": "ok"}
 async def webhook(request: Request):
     data = await request.json()
 
