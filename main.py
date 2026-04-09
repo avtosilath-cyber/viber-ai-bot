@@ -279,13 +279,26 @@ def handle_message(chat_id, text):
 
 
 # ===== WEBHOOK =====
-@app.post("/")@app.get("/")
-def root():
-    return {"status": "ok"}
+@app.post("/")
 async def webhook(request: Request):
-    data = await request.json()
+    try:
+        data = await request.json()
 
-    if "message" not in data:
+        message = data.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+
+        text = message.get("text", "")
+
+        if not chat_id:
+            return {"ok": True}
+
+        handle_message(chat_id, text)
+
+        return {"ok": True}
+
+    except Exception as e:
+        print("ERROR:", e)
         return {"ok": True}
 
     message = data["message"]
