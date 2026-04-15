@@ -242,6 +242,25 @@ def handle_message(chat_id, text):
 
     user["last"] = text
 
+    # --- поиск ---
+    result = search(text)
+
+    if result:
+        send(chat_id,
+             f"🔍 Нашёл:\n{result}\n\n"
+             "Подходит?\n1️⃣ Да\n2️⃣ Аналог\n3️⃣ Вопрос")
+        return
+
+    # --- AI ---
+    reply = ask_gpt(text)
+    send(chat_id, reply)
+
+    # --- AI ---
+    reply = ask_gpt(text)
+    send(chat_id, reply)
+
+    user["last"] = text
+
     # ответы клиента
     if text.strip() in ["1", "да", "Да"]:
         send(chat_id, "🔥 Отлично! Передаю менеджеру для оформления")
