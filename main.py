@@ -16,19 +16,14 @@ df = None
 
 
 # ===== ОТПРАВКА =====
-def send(chat_id, text):
-  def ask_gpt(user_text):
+def ask_gpt(user_text):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content":
-                    "Ты менеджер по продаже автозапчастей AUTOMAG. "
-                    "Отвечай на русском и украинском. "
-                    "Общайся просто и уверенно. "
-                    "Помогай подобрать запчасти и вести к покупке."
+                    "content": "Ты менеджер по продаже автозапчастей AUTOMAG. Отвечай на русском и украинском. Общайся просто и уверенно. Помогай подобрать запчасти и вести к покупке."
                 },
                 {"role": "user", "content": user_text}
             ],
@@ -38,7 +33,7 @@ def send(chat_id, text):
         return response.choices[0].message.content
 
     except Exception as e:
-        return "Что-то пошло не так, попробуйте ещё раз 🙌"
+        return "Что-то пошло не так, попробуйте ещё раз 🙏"
 
 
 # ===== МЕНЕДЖЕР =====
@@ -250,21 +245,9 @@ def handle_message(chat_id, text):
              f"🔍 Нашёл:\n{result}\n\n"
              "Подходит?\n1️⃣ Да\n2️⃣ Аналог\n3️⃣ Вопрос")
         return
-
-
-✅ Есть в наличии
-🚚 Быстрая отправка
-
-Оформляем заказ? Напишите:
-1️⃣ Да
-2️⃣ Нужен аналог
-3️⃣ Есть вопрос""")
-        return
-
-    send(chat_id, "Не нашли. Передаю менеджеру 👌")
-    notify_manager("Не найдено", text, chat_id)
-
-
+# --- AI ---
+reply = ask_gpt(text)
+send(chat_id, reply)
 # ===== WEBHOOK =====
 @app.post("/")
 async def webhook(request: Request):
