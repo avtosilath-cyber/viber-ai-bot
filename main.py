@@ -3,7 +3,8 @@ import requests
 import pandas as pd
 import re
 from fastapi import FastAPI, Request
-
+from openai import OpenAI
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 app = FastAPI()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -16,10 +17,28 @@ df = None
 
 # ===== ОТПРАВКА =====
 def send(chat_id, text):
-    requests.post(f"{TELEGRAM_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
+  def ask_gpt(user_text):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content":
+                    "Ты менеджер по продаже автозапчастей AUTOMAG. "
+                    "Отвечай на русском и украинском. "
+                    "Общайся просто и уверенно. "
+                    "Помогай подобрать запчасти и вести к покупке."
+                },
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        return "Что-то пошло не так, попробуйте ещё раз 🙌"
 
 
 # ===== МЕНЕДЖЕР =====
