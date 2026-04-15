@@ -5,3 +5,4 @@ fastapi
 uvicorn[standard]
 openai
 requests
+# update
