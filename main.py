@@ -237,14 +237,12 @@ def handle_message(chat_id, text):
 
     user["last"] = text
 
-    # --- поиск ---
     result = search(text)
 
     if result:
-        send(chat_id,
-             f"🔍 Нашёл:\n{result}\n\n"
-             "Подходит?\n1️⃣ Да\n2️⃣ Аналог\n3️⃣ Вопрос")
+        send(chat_id, f"🔍 Нашёл:\n{result}\n\nПодходит?\n1 Да\n2 Аналог\n3 Вопрос")
         return
+
 # --- AI ---
 reply = ask_gpt(text)
 send(chat_id, reply)
