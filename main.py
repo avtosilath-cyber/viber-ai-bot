@@ -279,8 +279,22 @@ def handle_message(chat_id, text):
         notify_manager("Подбор", text, chat_id)
         return
 
-    result = search(text)
+  result = search(text)
 
+# если нашли — показываем товар
+if result:
+    send(chat_id,
+    f"🔍 Нашёл:\n{result}\n\n"
+    "Подходит?\n1️⃣ Да\n2️⃣ Аналог\n3️⃣ Вопрос")
+    return
+
+# если НЕ нашли — включаем AI
+reply = ask_gpt(text)
+send(chat_id, reply)
+
+# 👉 ВКЛЮЧАЕМ AI
+reply = ask_gpt(text)
+send(chat_id, reply)
     if result:
         send(chat_id, f"""{result}
 
